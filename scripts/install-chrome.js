@@ -1,4 +1,5 @@
 const { spawnSync } = require("node:child_process");
+const { chmodSync, existsSync, readdirSync, statSync } = require("node:fs");
 const path = require("node:path");
 
 if (process.env.SKIP_PUPPETEER_BROWSER_INSTALL === "1") {
@@ -27,4 +28,27 @@ if (result.error) {
   process.exit(1);
 }
 
+if (result.status === 0 && process.platform !== "win32") {
+  chmodChromeExecutables(process.env.PUPPETEER_CACHE_DIR);
+}
+
 process.exit(result.status || 0);
+
+function chmodChromeExecutables(dir) {
+  if (!existsSync(dir)) return;
+
+  for (const entry of readdirSync(dir)) {
+    const entryPath = path.join(dir, entry);
+    const stat = statSync(entryPath);
+
+    if (stat.isDirectory()) {
+      chmodChromeExecutables(entryPath);
+      continue;
+    }
+
+    if (entry === "chrome" || entry === "chrome_crashpad_handler") {
+      chmodSync(entryPath, 0o755);
+      console.log(`Executable permission set: ${entryPath}`);
+    }
+  }
+}

@@ -1,4 +1,5 @@
 const path = require("node:path");
+const { chmodSync } = require("node:fs");
 
 const rootDir = __dirname;
 process.env.PUPPETEER_CACHE_DIR ||= path.join(rootDir, ".cache", "puppeteer");
@@ -22,13 +23,31 @@ function mergeArgs(existingArgs) {
   ]));
 }
 
+function ensureExecutablePermission(filePath) {
+  if (!filePath || process.platform === "win32") return;
+  try {
+    chmodSync(filePath, 0o755);
+  } catch {}
+}
+
 function resolveExecutablePath(existingPath) {
-  if (existingPath) return existingPath;
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (process.env.CHROME_BIN) return process.env.CHROME_BIN;
+  if (existingPath) {
+    ensureExecutablePermission(existingPath);
+    return existingPath;
+  }
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    ensureExecutablePermission(process.env.PUPPETEER_EXECUTABLE_PATH);
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  if (process.env.CHROME_BIN) {
+    ensureExecutablePermission(process.env.CHROME_BIN);
+    return process.env.CHROME_BIN;
+  }
 
   try {
-    return puppeteerPackage?.executablePath?.() || undefined;
+    const executablePath = puppeteerPackage?.executablePath?.() || undefined;
+    ensureExecutablePermission(executablePath);
+    return executablePath;
   } catch {
     return undefined;
   }
