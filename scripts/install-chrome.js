@@ -46,7 +46,7 @@ function chmodChromeExecutables(dir) {
       continue;
     }
 
-    if (entry === "chrome" || entry === "chrome_crashpad_handler") {
+    if (!entry.includes(".") || entry.endsWith("_handler")) {
       chmodSync(entryPath, 0o755);
       console.log(`Executable permission set: ${entryPath}`);
     }
