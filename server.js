@@ -1,8 +1,60 @@
 const path = require("node:path");
-const { chmodSync, existsSync, readdirSync, statSync } = require("node:fs");
+const { chmodSync, existsSync, readdirSync, statSync, readFileSync } = require("node:fs");
+const Module = require("node:module");
 
 const rootDir = __dirname;
 process.env.PUPPETEER_CACHE_DIR ||= path.join(rootDir, ".cache", "puppeteer");
+
+const webhookQueuePatch = String.raw`async function handleHotmartWebhook(req, res) {
+  const rawBody = await readBody(req);
+  const payload = parseJson(rawBody);
+  const config = await getConfig();
+
+  if (!payload) {
+    await recordEvent({ status: "invalid_json", receivedAt: new Date().toISOString(), rawBody });
+    return json(res, 400, { ok: false, error: "JSON invalido" });
+  }
+
+  if (!isHotmartRequestAuthorized(req, config)) {
+    await recordEvent({ status: "unauthorized", receivedAt: new Date().toISOString(), payload });
+    return json(res, 401, { ok: false, error: "Webhook nao autorizado" });
+  }
+
+  const eventType = getEventType(payload);
+  const allowedEvents = parseList(config.hotmartAllowedEvents).map((event) => event.toUpperCase());
+  if (allowedEvents.length && !allowedEvents.includes(eventType)) {
+    await recordEvent({ status: "ignored", reason: "event_not_allowed", eventType, receivedAt: new Date().toISOString(), payload });
+    return json(res, 202, { ok: true, ignored: true, eventType });
+  }
+
+  const sale = extractSale(payload);
+  if (!sale.phone) {
+    await recordEvent({ status: "missing_phone", eventType, receivedAt: new Date().toISOString(), sale, payload });
+    return json(res, 422, { ok: false, error: "Telefone do comprador nao encontrado no payload" });
+  }
+
+  const receivedAt = new Date().toISOString();
+  await recordEvent({ status: "queued", eventType, receivedAt, sale, payload });
+  json(res, 200, { ok: true, queued: true, eventType, buyer: sale.buyerName, phone: sale.phone });
+  processHotmartSaleInBackground({ sale, config, eventType, payload });
+}
+
+async function processHotmartSaleInBackground({ sale, config, eventType, payload }) {
+  try {
+    const messages = await sendWhatsAppConfirmation(sale, config);
+    await recordEvent({ status: "sent", eventType, receivedAt: new Date().toISOString(), sale, messages, payload });
+  } catch (error) {
+    await recordEvent({
+      status: "send_failed",
+      eventType,
+      receivedAt: new Date().toISOString(),
+      sale,
+      error: error.message,
+      payload
+    });
+  }
+}
+`;
 
 const whatsappWeb = require("whatsapp-web.js");
 let puppeteerPackage = null;
@@ -123,4 +175,22 @@ class PatchedClient extends OriginalClient {
 whatsappWeb.Client = PatchedClient;
 whatsappWeb.LocalAuth = TemporaryLocalAuth;
 
-require("./legacy-server.js");
+runLegacyServerWithWebhookQueue();
+
+function runLegacyServerWithWebhookQueue() {
+  const legacyPath = path.join(rootDir, "legacy-server.js");
+  const originalSource = readFileSync(legacyPath, "utf8");
+  const patchedSource = originalSource.replace(
+    /async function handleHotmartWebhook\(req, res\) \{[\s\S]*?\nasync function handleTestSale\(req, res, url\) \{/,
+    `${webhookQueuePatch}\nasync function handleTestSale(req, res, url) {`
+  );
+
+  if (patchedSource === originalSource) {
+    throw new Error("Nao foi possivel aplicar o patch de resposta rapida no webhook da Hotmart.");
+  }
+
+  const legacyModule = new Module(legacyPath, module);
+  legacyModule.filename = legacyPath;
+  legacyModule.paths = Module._nodeModulePaths(path.dirname(legacyPath));
+  legacyModule._compile(patchedSource, legacyPath);
+}
