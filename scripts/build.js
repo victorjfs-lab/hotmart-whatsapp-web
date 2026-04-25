@@ -12,6 +12,7 @@ async function main() {
   await cp("src", "dist/src", { recursive: true });
   await cp("public", "dist/public", { recursive: true });
   await cp("server.js", "dist/server.js");
+  await cp("legacy-server.js", "dist/legacy-server.js");
   await cp("package.json", "dist/package.json");
 
   const installCommand = process.platform === "win32" ? "cmd" : "npm";
