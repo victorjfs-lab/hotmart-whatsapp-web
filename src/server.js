@@ -1,7 +1,7 @@
-import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import express from "express";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -36,7 +36,9 @@ const mimeTypes = {
   ".ico": "image/x-icon"
 };
 
-const server = http.createServer(async (req, res) => {
+const app = express();
+
+app.use(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -97,7 +99,7 @@ process.on("unhandledRejection", (error) => {
 });
 
 const listenArgs = typeof port === "number" ? [port, host] : [port];
-server.listen(...listenArgs, () => {
+const server = app.listen(...listenArgs, () => {
   const address = server.address();
   const displayAddress = typeof address === "string"
     ? address
