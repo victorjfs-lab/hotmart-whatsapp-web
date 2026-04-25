@@ -5,7 +5,7 @@
   "description": "Webhook Hotmart que envia confirmações por WhatsApp Web.",
   "type": "module",
   "scripts": {
-    "build": "npm install",
+    "build": "node scripts/build.js",
     "start": "node src/server.js",
     "dev": "node --watch src/server.js"
   },
