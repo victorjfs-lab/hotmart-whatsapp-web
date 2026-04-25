@@ -2,13 +2,12 @@
   "name": "hotmart-whatsapp-web",
   "version": "1.0.0",
   "private": true,
-  "description": "Webhook Hotmart que envia confirmações por WhatsApp Web.",
-  "type": "module",
+  "description": "Webhook Hotmart que envia confirmacoes por WhatsApp Web.",
   "main": "server.js",
   "scripts": {
     "build": "node scripts/build.js",
     "start": "node server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node server.js"
   },
   "engines": {
     "node": ">=18"
