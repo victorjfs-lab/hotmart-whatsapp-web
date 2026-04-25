@@ -3,9 +3,6 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import qrcode from "qrcode";
-import whatsappWeb from "whatsapp-web.js";
-
-const { Client, LocalAuth } = whatsappWeb;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -18,6 +15,8 @@ await loadEnvFile(path.join(rootDir, ".env"));
 
 const env = process.env;
 const port = Number(env.PORT || 3000);
+const host = env.HOST || "0.0.0.0";
+let whatsappWebModule = null;
 const whatsappState = {
   client: null,
   status: "stopped",
@@ -42,7 +41,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return json(res, 200, { ok: true, service: "hotmart-whatsapp-simple" });
+      return json(res, 200, { ok: true, service: "hotmart-whatsapp-web" });
     }
 
     if (req.method === "GET" && url.pathname === "/api/events") {
@@ -89,8 +88,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`Hotmart WhatsApp app rodando em http://localhost:${port}`);
+server.listen(port, host, () => {
+  console.log(`Hotmart WhatsApp app rodando em http://${host}:${port}`);
   console.log(`Webhook: http://localhost:${port}/webhooks/hotmart`);
 });
 
@@ -444,7 +443,7 @@ async function getConfig() {
 function redactConfig(config) {
   return {
     ...config,
-    whatsappAccessToken: config.whatsappAccessToken ? "••••••••••••" : "",
+    whatsappAccessToken: config.whatsappAccessToken ? "************" : "",
     hasWhatsappAccessToken: Boolean(config.whatsappAccessToken)
   };
 }
@@ -472,6 +471,7 @@ async function ensureWhatsAppWebClient() {
   whatsappState.status = "starting";
   whatsappState.lastError = "";
 
+  const { Client, LocalAuth } = await getWhatsAppWebModule();
   const client = new Client({
     authStrategy: new LocalAuth({
       clientId: "hotmart-whatsapp",
@@ -522,6 +522,22 @@ async function ensureWhatsAppWebClient() {
   });
 
   return client;
+}
+
+async function getWhatsAppWebModule() {
+  if (whatsappWebModule) return whatsappWebModule;
+
+  const imported = await import("whatsapp-web.js");
+  const module = imported.default || imported;
+  if (!module.Client || !module.LocalAuth) {
+    throw new Error("Nao foi possivel carregar whatsapp-web.js.");
+  }
+
+  whatsappWebModule = {
+    Client: module.Client,
+    LocalAuth: module.LocalAuth
+  };
+  return whatsappWebModule;
 }
 
 function publicWhatsAppState() {
