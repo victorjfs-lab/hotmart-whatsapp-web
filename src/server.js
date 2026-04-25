@@ -14,7 +14,7 @@ const configFile = path.join(dataDir, "config.json");
 await loadEnvFile(path.join(rootDir, ".env"));
 
 const env = process.env;
-const port = Number(env.PORT || 3000);
+const port = parseListenTarget(env.PORT || 3000);
 const host = env.HOST || "0.0.0.0";
 let whatsappWebModule = null;
 const whatsappState = {
@@ -88,9 +88,23 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, host, () => {
-  console.log(`Hotmart WhatsApp app rodando em http://${host}:${port}`);
-  console.log(`Webhook: http://localhost:${port}/webhooks/hotmart`);
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error);
+});
+
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled Rejection:", error);
+});
+
+const listenArgs = typeof port === "number" ? [port, host] : [port];
+server.listen(...listenArgs, () => {
+  const address = server.address();
+  const displayAddress = typeof address === "string"
+    ? address
+    : `${address?.address || host}:${address?.port || port}`;
+
+  console.log(`Hotmart WhatsApp app rodando em ${displayAddress}`);
+  console.log("Webhook path: /webhooks/hotmart");
 });
 
 async function handleHotmartWebhook(req, res) {
@@ -556,6 +570,13 @@ function normalizeBrazilPhone(value) {
   if (digits.startsWith("55")) return digits;
   if (digits.length === 10 || digits.length === 11) return `55${digits}`;
   return digits;
+}
+
+function parseListenTarget(value) {
+  if (typeof value === "number") return value;
+  const text = String(value || "").trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  return text || 3000;
 }
 
 function firstObject(source, paths) {
