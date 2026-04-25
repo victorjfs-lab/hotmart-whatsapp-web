@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hotmart para WhatsApp</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Automação de venda</p>
+          <h1>Hotmart para WhatsApp</h1>
+          <p class="lede">Configure o webhook, conecte seu WhatsApp Web e teste uma venda antes de publicar.</p>
+        </div>
+        <div class="status" id="health-status">Verificando...</div>
+      </section>
+
+      <section class="grid top-grid">
+        <article class="panel">
+          <div class="section-title">
+            <h2>Webhook da Hotmart</h2>
+          </div>
+          <label>
+            URL para colar na Hotmart
+            <div class="inline-field">
+              <input id="webhook-url" readonly>
+              <button id="copy-webhook" type="button">Copiar</button>
+            </div>
+          </label>
+          <p class="hint">Em produção, essa URL precisa ser HTTPS. Localhost serve apenas para teste.</p>
+        </article>
+
+        <article class="panel">
+          <h2>Status de configuração</h2>
+          <div class="checks" id="config-checks">
+            <span>Carregando configuração...</span>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel whatsapp-panel">
+        <div class="section-title">
+          <h2>WhatsApp Web</h2>
+          <button id="start-whatsapp" type="button">Iniciar WhatsApp Web</button>
+        </div>
+        <div class="whatsapp-status">
+          <div>
+            <strong id="whatsapp-label">Desconectado</strong>
+            <span id="whatsapp-detail">Clique em iniciar para gerar o QR Code.</span>
+          </div>
+          <img id="whatsapp-qr" alt="QR Code do WhatsApp Web">
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <h2>Configuração</h2>
+          <button id="save-config" type="button">Salvar configuração</button>
+        </div>
+
+        <form id="config-form" class="form-grid">
+          <input name="whatsappProvider" type="hidden" value="web">
+
+          <label>
+            Token secreto da Hotmart
+            <input name="hotmartWebhookSecret" autocomplete="off" placeholder="Ex.: minha-chave-secreta">
+          </label>
+
+          <label>
+            Eventos aceitos
+            <input name="hotmartAllowedEvents" placeholder="PURCHASE_APPROVED,PURCHASE_COMPLETE">
+          </label>
+
+          <label class="wide">
+            Mensagens para enviar, uma por linha
+            <textarea name="whatsappTextMessages" rows="5" placeholder="Oi, {{nome}}! Sua compra de {{produto}} foi confirmada.
+Seu acesso já está liberado. Use o e-mail {{email}} para entrar."></textarea>
+          </label>
+        </form>
+
+        <div class="notice" id="config-result"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <h2>Teste de venda</h2>
+          <div class="actions">
+            <button id="dry-run" type="button" class="secondary">Validar sem enviar</button>
+            <button id="send-test" type="button">Enviar teste</button>
+          </div>
+        </div>
+
+        <form id="test-form" class="form-grid">
+          <label>
+            Nome do comprador
+            <input name="buyerName" value="Cliente Teste">
+          </label>
+
+          <label>
+            WhatsApp do comprador
+            <input name="phone" placeholder="11999999999">
+          </label>
+
+          <label>
+            E-mail
+            <input name="buyerEmail" value="cliente@email.com">
+          </label>
+
+          <label>
+            Produto
+            <input name="productName" value="Produto Teste">
+          </label>
+        </form>
+
+        <div class="notice" id="test-result"></div>
+      </section>
+
+      <section class="panel logs">
+        <div class="section-title">
+          <h2>Últimos eventos</h2>
+          <button id="refresh-events" type="button" class="secondary">Atualizar</button>
+        </div>
+        <div id="events" class="events">Carregando...</div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+node_modules/
+npm-debug.log*
+
+.env
+.env.*
+!.env.example
+
+data/
+.wwebjs_cache/
+.wwebjs_auth/
+
+server.out.log
+server.err.log
+
+.DS_Store
+Thumbs.db
