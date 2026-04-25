@@ -11,17 +11,21 @@ async function main() {
   await mkdir("dist", { recursive: true });
   await cp("src", "dist/src", { recursive: true });
   await cp("public", "dist/public", { recursive: true });
+  await cp("scripts", "dist/scripts", { recursive: true });
+  await cp(".puppeteerrc.cjs", "dist/.puppeteerrc.cjs");
   await cp("server.js", "dist/server.js");
-  await cp("legacy-server.js", "dist/legacy-server.js");
+  await cp("legacy-server.js", "dist/legacy-server.js").catch(() => {});
   await cp("package.json", "dist/package.json");
+  await cp("package-lock.json", "dist/package-lock.json").catch(() => {});
 
   const installCommand = process.platform === "win32" ? "cmd" : "npm";
   const installArgs =
     process.platform === "win32"
-      ? ["/c", "npm", "install", "--omit=dev"]
-      : ["install", "--omit=dev"];
+      ? ["/c", "npm", "install", "--omit=dev", "--ignore-scripts"]
+      : ["install", "--omit=dev", "--ignore-scripts"];
 
   await run(installCommand, installArgs, "dist");
+  await run(process.execPath, ["scripts/install-chrome.js"], "dist");
 
   console.log("Build ready in dist/");
 }

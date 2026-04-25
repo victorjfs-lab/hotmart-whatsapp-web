@@ -6,6 +6,8 @@
   "main": "server.js",
   "scripts": {
     "build": "node scripts/build.js",
+    "install:chrome": "node scripts/install-chrome.js",
+    "postinstall": "node scripts/install-chrome.js",
     "start": "node server.js",
     "dev": "node server.js"
   },
