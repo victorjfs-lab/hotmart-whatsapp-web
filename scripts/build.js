@@ -12,7 +12,7 @@ async function main() {
   await cp("src", "dist/src", { recursive: true });
   await cp("public", "dist/public", { recursive: true });
   await cp("scripts", "dist/scripts", { recursive: true });
-  await cp(".puppeteerrc.cjs", "dist/.puppeteerrc.cjs");
+  await cp(".puppeteerrc.cjs", "dist/.puppeteerrc.cjs").catch(() => {});
   await cp("server.js", "dist/server.js");
   await cp("legacy-server.js", "dist/legacy-server.js").catch(() => {});
   await cp("package.json", "dist/package.json");
@@ -25,7 +25,6 @@ async function main() {
       : ["install", "--omit=dev", "--ignore-scripts"];
 
   await run(installCommand, installArgs, "dist");
-  await run(process.execPath, ["scripts/install-chrome.js"], "dist");
 
   console.log("Build ready in dist/");
 }

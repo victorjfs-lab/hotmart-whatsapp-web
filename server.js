@@ -1,9 +1,9 @@
 const path = require("node:path");
-const { chmodSync, existsSync, readdirSync, statSync, readFileSync } = require("node:fs");
+const { readFileSync } = require("node:fs");
 const Module = require("node:module");
 
 const rootDir = __dirname;
-process.env.PUPPETEER_CACHE_DIR ||= path.join(rootDir, ".cache", "puppeteer");
+const legacyPath = path.join(rootDir, "legacy-server.js");
 
 const webhookQueuePatch = String.raw`async function handleHotmartWebhook(req, res) {
   const rawBody = await readBody(req);
@@ -56,141 +56,177 @@ async function processHotmartSaleInBackground({ sale, config, eventType, payload
 }
 `;
 
-const whatsappWeb = require("whatsapp-web.js");
-let puppeteerPackage = null;
+const sendMessagesPatch = String.raw`async function sendWhatsAppWebMessages(sale, config) {
+  await ensureWhatsAppWebClient();
+  if (whatsappState.status !== "ready") {
+    throw new Error("WhatsApp Web ainda nao esta conectado. Clique em Iniciar WhatsApp Web e leia o QR Code.");
+  }
 
-try {
-  puppeteerPackage = require("puppeteer");
-} catch {}
+  const messages = getSaleMessages(sale, config);
+  const chatId = await getWhatsAppWebChatId(sale.phone);
+  const responses = [];
 
-const OriginalClient = whatsappWeb.Client;
-const OriginalLocalAuth = whatsappWeb.LocalAuth;
+  for (const message of messages) {
+    responses.push(await whatsappState.client.sendMessage(chatId, { text: message }));
+  }
 
-function mergeArgs(existingArgs) {
-  return Array.from(new Set([
-    ...(Array.isArray(existingArgs) ? existingArgs : []),
-    "--disable-extensions",
-    "--disable-background-networking",
-    "--disable-sync",
-    "--disable-breakpad",
-    "--disable-crash-reporter",
-    "--disable-crashpad",
-    "--disable-features=Crashpad",
-    "--no-crash-upload"
-  ]));
+  return responses.map((message) => ({
+    id: message.key?.id || "",
+    timestamp: Date.now()
+  }));
 }
+`;
 
-function ensureExecutablePermission(filePath) {
-  if (!filePath || process.platform === "win32") return;
-  try {
-    chmodSync(filePath, 0o755);
-  } catch {}
+const chatIdPatch = String.raw`async function getWhatsAppWebChatId(phone) {
+  const digits = normalizeBrazilPhone(phone);
+  const candidate = `${digits}@s.whatsapp.net`;
+  const matches = await whatsappState.client.onWhatsApp(candidate).catch(() => []);
+  const match = Array.isArray(matches) ? matches.find((item) => item?.exists) : null;
+
+  if (match?.jid) return match.jid;
+
+  throw new Error(`O numero ${digits} nao parece estar registrado no WhatsApp.`);
 }
+`;
 
-function ensureChromeDirectoryPermissions(executablePath) {
-  if (!executablePath || process.platform === "win32") return;
-  chmodExecutableFiles(path.dirname(executablePath));
-}
+const initializePatch = String.raw`async function initializeWhatsAppWebClient() {
+  await cleanupWhatsAppRuntimeFiles();
 
-function chmodExecutableFiles(dir) {
-  if (!existsSync(dir)) return;
+  const baileys = await getBaileysModule();
+  const makeWASocket = baileys.default;
+  const { fetchLatestBaileysVersion, useMultiFileAuthState } = baileys;
+  const { state, saveCreds } = await useMultiFileAuthState(whatsappAuthDir);
+  const logger = await getBaileysLogger();
+  const versionResult = fetchLatestBaileysVersion
+    ? await fetchLatestBaileysVersion().catch(() => ({}))
+    : {};
 
-  for (const entry of readdirSync(dir)) {
-    const entryPath = path.join(dir, entry);
-    let stat;
-    try {
-      stat = statSync(entryPath);
-    } catch {
-      continue;
+  const client = makeWASocket({
+    auth: state,
+    browser: ["Hotmart WhatsApp", "Chrome", "1.0.0"],
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000,
+    logger,
+    markOnlineOnConnect: false,
+    printQRInTerminal: false,
+    syncFullHistory: false,
+    version: versionResult.version
+  });
+
+  client.ev.on("creds.update", saveCreds);
+
+  client.ev.on("connection.update", async (update) => {
+    if (update.qr) {
+      clearWhatsAppStartupTimeout();
+      whatsappState.status = "qr";
+      whatsappState.qr = update.qr;
+      whatsappState.qrDataUrl = await generateQrDataUrl(update.qr);
+      whatsappState.lastError = "";
     }
 
-    if (stat.isDirectory()) {
-      chmodExecutableFiles(entryPath);
-      continue;
+    if (update.connection === "open") {
+      clearWhatsAppStartupTimeout();
+      whatsappState.status = "ready";
+      whatsappState.qr = "";
+      whatsappState.qrDataUrl = "";
+      whatsappState.readyAt = new Date().toISOString();
+      whatsappState.number = normalizeWhatsAppUser(client.user?.id || client.user?.jid || "");
+      whatsappState.lastError = "";
     }
 
-    if (!entry.includes(".") || entry.endsWith("_handler")) {
-      ensureExecutablePermission(entryPath);
+    if (update.connection === "close") {
+      clearWhatsAppStartupTimeout();
+      whatsappState.status = "disconnected";
+      whatsappState.lastError = explainBaileysDisconnect(update.lastDisconnect);
+      whatsappState.client = null;
     }
+  });
+
+  whatsappState.client = client;
+  return client;
+}
+`;
+
+const resetPatch = String.raw`async function resetWhatsAppSession() {
+  clearWhatsAppStartupTimeout();
+  const client = whatsappState.client;
+  whatsappState.client = null;
+  whatsappStartPromise = null;
+
+  if (client) {
+    await client.logout?.().catch(() => {});
+    client.ws?.close?.();
   }
+
+  await cleanupWhatsAppSessionFiles();
+
+  whatsappState.status = "stopped";
+  whatsappState.qr = "";
+  whatsappState.qrDataUrl = "";
+  whatsappState.lastError = "";
+  whatsappState.readyAt = "";
+  whatsappState.number = "";
+  whatsappState.startedAt = "";
+}
+`;
+
+const baileysHelpersPatch = String.raw`async function getBaileysModule() {
+  if (baileysModule) return baileysModule;
+
+  baileysModule = await import("@whiskeysockets/baileys");
+  if (!baileysModule.default || !baileysModule.useMultiFileAuthState) {
+    throw new Error("Nao foi possivel carregar o motor WhatsApp Web sem Chrome.");
+  }
+
+  return baileysModule;
 }
 
-function resolveExecutablePath(existingPath) {
-  if (existingPath) {
-    ensureExecutablePermission(existingPath);
-    ensureChromeDirectoryPermissions(existingPath);
-    return existingPath;
-  }
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    ensureExecutablePermission(process.env.PUPPETEER_EXECUTABLE_PATH);
-    ensureChromeDirectoryPermissions(process.env.PUPPETEER_EXECUTABLE_PATH);
-    return process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
-  if (process.env.CHROME_BIN) {
-    ensureExecutablePermission(process.env.CHROME_BIN);
-    ensureChromeDirectoryPermissions(process.env.CHROME_BIN);
-    return process.env.CHROME_BIN;
+async function getBaileysLogger() {
+  if (!pinoModule) {
+    const imported = await import("pino").catch(() => null);
+    pinoModule = imported?.default || imported;
   }
 
-  try {
-    const executablePath = puppeteerPackage?.executablePath?.() || undefined;
-    ensureExecutablePermission(executablePath);
-    ensureChromeDirectoryPermissions(executablePath);
-    return executablePath;
-  } catch {
-    return undefined;
-  }
+  if (pinoModule) return pinoModule({ level: "silent" });
+
+  const silent = {
+    trace() {},
+    debug() {},
+    info() {},
+    warn() {},
+    error() {},
+    fatal() {}
+  };
+  silent.child = () => silent;
+  return silent;
 }
 
-class TemporaryLocalAuth extends OriginalLocalAuth {
-  async beforeBrowserInitialized() {
-    const puppeteerOpts = this.client.options.puppeteer || {};
-    this.client.options.puppeteer = { ...puppeteerOpts };
-    this.userDataDir = "";
-  }
-
-  async logout() {}
+function explainBaileysDisconnect(lastDisconnect) {
+  const error = lastDisconnect?.error;
+  const statusCode = error?.output?.statusCode || error?.statusCode || "";
+  const message = error?.message || String(error || "Desconectado");
+  return statusCode ? `${message} (${statusCode})` : message;
 }
 
-class PatchedClient extends OriginalClient {
-  constructor(options = {}) {
-    const puppeteer = options.puppeteer || {};
-    super({
-      ...options,
-      webVersionCache: { type: "none" },
-      authTimeoutMs: 120000,
-      takeoverOnConflict: true,
-      takeoverTimeoutMs: 0,
-      puppeteer: {
-        ...puppeteer,
-        executablePath: resolveExecutablePath(puppeteer.executablePath),
-        timeout: puppeteer.timeout || 60000,
-        protocolTimeout: puppeteer.protocolTimeout || 120000,
-        args: mergeArgs(puppeteer.args)
-      }
-    });
-  }
+function normalizeWhatsAppUser(value) {
+  return String(value || "").split(":")[0].split("@")[0];
+}
+`;
+
+let source = readFileSync(legacyPath, "utf8");
+source = source.replace("let whatsappWebModule = null;\nlet qrcodeModule = null;", "let baileysModule = null;\nlet pinoModule = null;\nlet qrcodeModule = null;");
+source = source.replace(/async function handleHotmartWebhook\(req, res\) \{[\s\S]*?\nasync function handleTestSale\(req, res, url\) \{/, `${webhookQueuePatch}\nasync function handleTestSale(req, res, url) {`);
+source = source.replace(/async function sendWhatsAppWebMessages\(sale, config\) \{[\s\S]*?\nfunction getSaleMessages\(sale, config\) \{/, `${sendMessagesPatch}\nfunction getSaleMessages(sale, config) {`);
+source = source.replace(/async function getWhatsAppWebChatId\(phone\) \{[\s\S]*?\nasync function callWhatsAppApi\(body, config = null\) \{/, `${chatIdPatch}\nasync function callWhatsAppApi(body, config = null) {`);
+source = source.replace(/async function initializeWhatsAppWebClient\(\) \{[\s\S]*?\nasync function resetWhatsAppSession\(\) \{/, `${initializePatch}\nasync function resetWhatsAppSession() {`);
+source = source.replace(/async function resetWhatsAppSession\(\) \{[\s\S]*?\nasync function cleanupWhatsAppSessionFiles\(\) \{/, `${resetPatch}\nasync function cleanupWhatsAppSessionFiles() {`);
+source = source.replace(/async function getWhatsAppWebModule\(\) \{[\s\S]*?\nasync function generateQrDataUrl\(qr\) \{/, `${baileysHelpersPatch}\nasync function generateQrDataUrl(qr) {`);
+
+if (source.includes("whatsapp-web.js") || source.includes("getWhatsAppWebModule")) {
+  throw new Error("Nao foi possivel trocar o motor do WhatsApp para Baileys.");
 }
 
-whatsappWeb.Client = PatchedClient;
-whatsappWeb.LocalAuth = TemporaryLocalAuth;
-
-runLegacyServerWithWebhookQueue();
-
-function runLegacyServerWithWebhookQueue() {
-  const legacyPath = path.join(rootDir, "legacy-server.js");
-  const originalSource = readFileSync(legacyPath, "utf8");
-  const patchedSource = originalSource.replace(
-    /async function handleHotmartWebhook\(req, res\) \{[\s\S]*?\nasync function handleTestSale\(req, res, url\) \{/,
-    `${webhookQueuePatch}\nasync function handleTestSale(req, res, url) {`
-  );
-
-  if (patchedSource === originalSource) {
-    throw new Error("Nao foi possivel aplicar o patch de resposta rapida no webhook da Hotmart.");
-  }
-
-  const legacyModule = new Module(legacyPath, module);
-  legacyModule.filename = legacyPath;
-  legacyModule.paths = Module._nodeModulePaths(path.dirname(legacyPath));
-  legacyModule._compile(patchedSource, legacyPath);
-}
+const legacyModule = new Module(legacyPath, module);
+legacyModule.filename = legacyPath;
+legacyModule.paths = Module._nodeModulePaths(path.dirname(legacyPath));
+legacyModule._compile(source, legacyPath);
