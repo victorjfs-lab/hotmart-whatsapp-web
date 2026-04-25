@@ -20,11 +20,14 @@ const whatsappState = {
   qrDataUrl: "",
   lastError: "",
   readyAt: "",
-  number: ""
+  number: "",
+  startedAt: ""
 };
 
 let whatsappWebModule = null;
 let qrcodeModule = null;
+let whatsappStartPromise = null;
+let whatsappStartupTimer = null;
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -481,16 +484,40 @@ async function handleWhatsAppStart(req, res, url) {
     return json(res, 401, { ok: false, error: "Painel nao autorizado" });
   }
 
-  await ensureWhatsAppWebClient();
-  json(res, 200, { ok: true, whatsapp: publicWhatsAppState() });
+  startWhatsAppWebClient();
+  json(res, 202, { ok: true, whatsapp: publicWhatsAppState() });
 }
 
 async function ensureWhatsAppWebClient() {
+  startWhatsAppWebClient();
+  if (whatsappState.status === "error") {
+    throw new Error(whatsappState.lastError || "WhatsApp Web nao iniciou.");
+  }
+
   if (whatsappState.client) return whatsappState.client;
+  throw new Error("WhatsApp Web ainda nao esta pronto. Gere o QR Code e conecte o aparelho.");
+}
+
+function startWhatsAppWebClient() {
+  if (whatsappState.client || whatsappStartPromise) return whatsappStartPromise;
 
   whatsappState.status = "starting";
   whatsappState.lastError = "";
+  whatsappState.startedAt = new Date().toISOString();
+  scheduleWhatsAppStartupTimeout();
 
+  whatsappStartPromise = initializeWhatsAppWebClient()
+    .catch((error) => {
+      setWhatsAppError(error);
+    })
+    .finally(() => {
+      whatsappStartPromise = null;
+    });
+
+  return whatsappStartPromise;
+}
+
+async function initializeWhatsAppWebClient() {
   const { Client, LocalAuth } = await getWhatsAppWebModule();
   const client = new Client({
     authStrategy: new LocalAuth({
@@ -499,11 +526,20 @@ async function ensureWhatsAppWebClient() {
     }),
     puppeteer: {
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || undefined,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-zygote"
+      ]
     }
   });
 
   client.on("qr", async (qr) => {
+    clearWhatsAppStartupTimeout();
     whatsappState.status = "qr";
     whatsappState.qr = qr;
     whatsappState.qrDataUrl = await generateQrDataUrl(qr);
@@ -511,6 +547,7 @@ async function ensureWhatsAppWebClient() {
   });
 
   client.on("ready", () => {
+    clearWhatsAppStartupTimeout();
     whatsappState.status = "ready";
     whatsappState.qr = "";
     whatsappState.qrDataUrl = "";
@@ -524,11 +561,13 @@ async function ensureWhatsAppWebClient() {
   });
 
   client.on("auth_failure", (message) => {
+    clearWhatsAppStartupTimeout();
     whatsappState.status = "auth_failure";
     whatsappState.lastError = String(message || "Falha de autenticacao");
   });
 
   client.on("disconnected", (reason) => {
+    clearWhatsAppStartupTimeout();
     whatsappState.status = "disconnected";
     whatsappState.lastError = String(reason || "Desconectado");
     whatsappState.client = null;
@@ -536,12 +575,53 @@ async function ensureWhatsAppWebClient() {
 
   whatsappState.client = client;
   client.initialize().catch((error) => {
-    whatsappState.status = "error";
-    whatsappState.lastError = error.message;
-    whatsappState.client = null;
+    setWhatsAppError(error);
   });
 
   return client;
+}
+
+function scheduleWhatsAppStartupTimeout() {
+  clearWhatsAppStartupTimeout();
+  whatsappStartupTimer = setTimeout(() => {
+    if (whatsappState.status !== "starting") return;
+    setWhatsAppError(new Error("O servidor nao conseguiu gerar o QR Code em 60 segundos. Em hospedagem compartilhada isso normalmente acontece quando o ambiente nao permite abrir o Chromium usado pelo WhatsApp Web."));
+  }, 60000);
+}
+
+function clearWhatsAppStartupTimeout() {
+  if (!whatsappStartupTimer) return;
+  clearTimeout(whatsappStartupTimer);
+  whatsappStartupTimer = null;
+}
+
+function setWhatsAppError(error) {
+  clearWhatsAppStartupTimeout();
+  whatsappState.status = "error";
+  whatsappState.qr = "";
+  whatsappState.qrDataUrl = "";
+  whatsappState.lastError = explainWhatsAppError(error);
+  whatsappState.client = null;
+}
+
+function explainWhatsAppError(error) {
+  const message = error?.message || String(error || "Erro desconhecido");
+  const chromiumHints = [
+    "Could not find Chrome",
+    "Failed to launch",
+    "executable",
+    "spawn",
+    "EACCES",
+    "No usable sandbox",
+    "Target closed",
+    "ProcessSingleton"
+  ];
+
+  if (chromiumHints.some((hint) => message.includes(hint))) {
+    return `A Hostinger nao conseguiu abrir o navegador interno do WhatsApp Web. Detalhe: ${message}`;
+  }
+
+  return message;
 }
 
 async function getWhatsAppWebModule() {
@@ -575,7 +655,8 @@ function publicWhatsAppState() {
     qrDataUrl: whatsappState.qrDataUrl,
     lastError: whatsappState.lastError,
     readyAt: whatsappState.readyAt,
-    number: whatsappState.number
+    number: whatsappState.number,
+    startedAt: whatsappState.startedAt
   };
 }
 
