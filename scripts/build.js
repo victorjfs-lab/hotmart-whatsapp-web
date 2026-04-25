@@ -1,22 +1,29 @@
-import { spawn } from "node:child_process";
-import { cp, mkdir, rm } from "node:fs/promises";
+const { spawn } = require("node:child_process");
+const { cp, mkdir, rm } = require("node:fs/promises");
 
-await rm("dist", { recursive: true, force: true });
-await mkdir("dist", { recursive: true });
-await cp("src", "dist/src", { recursive: true });
-await cp("public", "dist/public", { recursive: true });
-await cp("server.js", "dist/server.js");
-await cp("package.json", "dist/package.json");
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
 
-const installCommand = process.platform === "win32" ? "cmd" : "npm";
-const installArgs =
-  process.platform === "win32"
-    ? ["/c", "npm", "install", "--omit=dev"]
-    : ["install", "--omit=dev"];
+async function main() {
+  await rm("dist", { recursive: true, force: true });
+  await mkdir("dist", { recursive: true });
+  await cp("src", "dist/src", { recursive: true });
+  await cp("public", "dist/public", { recursive: true });
+  await cp("server.js", "dist/server.js");
+  await cp("package.json", "dist/package.json");
 
-await run(installCommand, installArgs, "dist");
+  const installCommand = process.platform === "win32" ? "cmd" : "npm";
+  const installArgs =
+    process.platform === "win32"
+      ? ["/c", "npm", "install", "--omit=dev"]
+      : ["install", "--omit=dev"];
 
-console.log("Build ready in dist/");
+  await run(installCommand, installArgs, "dist");
+
+  console.log("Build ready in dist/");
+}
 
 function run(command, args, cwd) {
   return new Promise((resolve, reject) => {
