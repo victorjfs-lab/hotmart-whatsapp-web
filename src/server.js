@@ -2,7 +2,6 @@ import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import qrcode from "qrcode";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -17,6 +16,7 @@ const env = process.env;
 const port = parseListenTarget(env.PORT || 3000);
 const host = env.HOST || "0.0.0.0";
 let whatsappWebModule = null;
+let qrcodeModule = null;
 const whatsappState = {
   client: null,
   status: "stopped",
@@ -500,7 +500,7 @@ async function ensureWhatsAppWebClient() {
   client.on("qr", async (qr) => {
     whatsappState.status = "qr";
     whatsappState.qr = qr;
-    whatsappState.qrDataUrl = await qrcode.toDataURL(qr);
+    whatsappState.qrDataUrl = await generateQrDataUrl(qr);
     whatsappState.lastError = "";
   });
 
@@ -552,6 +552,15 @@ async function getWhatsAppWebModule() {
     LocalAuth: module.LocalAuth
   };
   return whatsappWebModule;
+}
+
+async function generateQrDataUrl(qr) {
+  if (!qrcodeModule) {
+    const imported = await import("qrcode");
+    qrcodeModule = imported.default || imported;
+  }
+
+  return qrcodeModule.toDataURL(qr);
 }
 
 function publicWhatsAppState() {
