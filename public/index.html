@@ -10,7 +10,7 @@
     <main class="shell">
       <section class="hero">
         <div>
-          <p class="eyebrow">Automação de venda</p>
+          <p class="eyebrow">AutomaÃ§Ã£o de venda</p>
           <h1>Hotmart para WhatsApp</h1>
           <p class="lede">Configure o webhook, conecte seu WhatsApp Web e teste uma venda antes de publicar.</p>
         </div>
@@ -29,13 +29,13 @@
               <button id="copy-webhook" type="button">Copiar</button>
             </div>
           </label>
-          <p class="hint">Em produção, essa URL precisa ser HTTPS. Localhost serve apenas para teste.</p>
+          <p class="hint">Em produÃ§Ã£o, essa URL precisa ser HTTPS. Localhost serve apenas para teste.</p>
         </article>
 
         <article class="panel">
-          <h2>Status de configuração</h2>
+          <h2>Status de configuraÃ§Ã£o</h2>
           <div class="checks" id="config-checks">
-            <span>Carregando configuração...</span>
+            <span>Carregando configuraÃ§Ã£o...</span>
           </div>
         </article>
       </section>
@@ -43,7 +43,10 @@
       <section class="panel whatsapp-panel">
         <div class="section-title">
           <h2>WhatsApp Web</h2>
-          <button id="start-whatsapp" type="button">Iniciar WhatsApp Web</button>
+          <div class="actions">
+            <button id="reset-whatsapp" type="button" class="secondary">Resetar sessÃ£o</button>
+            <button id="start-whatsapp" type="button">Iniciar WhatsApp Web</button>
+          </div>
         </div>
         <div class="whatsapp-status">
           <div>
@@ -56,8 +59,8 @@
 
       <section class="panel">
         <div class="section-title">
-          <h2>Configuração</h2>
-          <button id="save-config" type="button">Salvar configuração</button>
+          <h2>ConfiguraÃ§Ã£o</h2>
+          <button id="save-config" type="button">Salvar configuraÃ§Ã£o</button>
         </div>
 
         <form id="config-form" class="form-grid">
@@ -76,7 +79,7 @@
           <label class="wide">
             Mensagens para enviar, uma por linha
             <textarea name="whatsappTextMessages" rows="5" placeholder="Oi, {{nome}}! Sua compra de {{produto}} foi confirmada.
-Seu acesso já está liberado. Use o e-mail {{email}} para entrar."></textarea>
+Seu acesso jÃ¡ estÃ¡ liberado. Use o e-mail {{email}} para entrar."></textarea>
           </label>
         </form>
 
@@ -119,7 +122,7 @@ Seu acesso já está liberado. Use o e-mail {{email}} para entrar."></textarea>
 
       <section class="panel logs">
         <div class="section-title">
-          <h2>Últimos eventos</h2>
+          <h2>Ãšltimos eventos</h2>
           <button id="refresh-events" type="button" class="secondary">Atualizar</button>
         </div>
         <div id="events" class="events">Carregando...</div>

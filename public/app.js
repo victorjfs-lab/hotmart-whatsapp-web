@@ -9,6 +9,7 @@ const saveConfigButton = document.querySelector("#save-config");
 const dryRunButton = document.querySelector("#dry-run");
 const sendTestButton = document.querySelector("#send-test");
 const startWhatsAppButton = document.querySelector("#start-whatsapp");
+const resetWhatsAppButton = document.querySelector("#reset-whatsapp");
 const whatsappLabel = document.querySelector("#whatsapp-label");
 const whatsappDetail = document.querySelector("#whatsapp-detail");
 const whatsappQr = document.querySelector("#whatsapp-qr");
@@ -31,6 +32,7 @@ saveConfigButton.addEventListener("click", saveConfig);
 dryRunButton.addEventListener("click", () => runTestSale(true));
 sendTestButton.addEventListener("click", () => runTestSale(false));
 startWhatsAppButton.addEventListener("click", startWhatsApp);
+resetWhatsAppButton.addEventListener("click", resetWhatsApp);
 
 checkHealth();
 loadConfig();
@@ -58,7 +60,7 @@ async function loadConfig() {
     renderConfigChecks(data.config);
   } catch (error) {
     setNotice(configResult, error.message, "error");
-    configChecks.textContent = "Não foi possível carregar.";
+    configChecks.textContent = "NÃ£o foi possÃ­vel carregar.";
   }
 }
 
@@ -74,7 +76,7 @@ async function saveConfig() {
     });
     fillForm(configForm, data.config);
     renderConfigChecks(data.config);
-    setNotice(configResult, "Configuração salva.", "success");
+    setNotice(configResult, "ConfiguraÃ§Ã£o salva.", "success");
   } catch (error) {
     setNotice(configResult, error.message, "error");
   } finally {
@@ -114,7 +116,7 @@ async function runTestSale(dryRun) {
 async function startWhatsApp() {
   startWhatsAppButton.disabled = true;
   whatsappLabel.textContent = "Iniciando...";
-  whatsappDetail.textContent = "Abrindo uma sessão do WhatsApp Web no servidor.";
+  whatsappDetail.textContent = "Abrindo uma sessÃ£o do WhatsApp Web no servidor.";
 
   try {
     const data = await requestJson("/api/whatsapp/start", { method: "POST" });
@@ -127,13 +129,31 @@ async function startWhatsApp() {
   }
 }
 
+async function resetWhatsApp() {
+  resetWhatsAppButton.disabled = true;
+  whatsappLabel.textContent = "Resetando...";
+  whatsappDetail.textContent = "Limpando a sessao local do WhatsApp Web.";
+  whatsappQr.removeAttribute("src");
+  whatsappQr.hidden = true;
+
+  try {
+    const data = await requestJson("/api/whatsapp/reset", { method: "POST" });
+    renderWhatsAppStatus(data.whatsapp);
+  } catch (error) {
+    whatsappLabel.textContent = "Erro";
+    whatsappDetail.textContent = error.message;
+  } finally {
+    resetWhatsAppButton.disabled = false;
+  }
+}
+
 async function loadWhatsAppStatus() {
   try {
     const data = await requestJson("/api/whatsapp/status");
     renderWhatsAppStatus(data.whatsapp);
   } catch {
-    whatsappLabel.textContent = "Indisponível";
-    whatsappDetail.textContent = "Não foi possível ler o status do WhatsApp Web.";
+    whatsappLabel.textContent = "IndisponÃ­vel";
+    whatsappDetail.textContent = "NÃ£o foi possÃ­vel ler o status do WhatsApp Web.";
   }
 }
 
@@ -163,7 +183,7 @@ function renderWhatsAppStatus(whatsapp) {
 
 function detailForStatus(whatsapp) {
   if (whatsapp.status === "ready") {
-    return whatsapp.number ? `Sessão conectada no número ${whatsapp.number}.` : "Sessão pronta para enviar mensagens.";
+    return whatsapp.number ? `SessÃ£o conectada no nÃºmero ${whatsapp.number}.` : "SessÃ£o pronta para enviar mensagens.";
   }
   if (whatsapp.status === "qr") return "Abra o WhatsApp no celular e leia o QR Code.";
   if (whatsapp.status === "starting") return "Aguardando o WhatsApp Web gerar o QR Code.";
@@ -235,7 +255,7 @@ function fillForm(form, values) {
 
   const tokenField = form.elements.whatsappAccessToken;
   if (tokenField && values?.hasWhatsappAccessToken) {
-    tokenField.placeholder = "Token já salvo. Cole outro para substituir.";
+    tokenField.placeholder = "Token jÃ¡ salvo. Cole outro para substituir.";
     tokenField.value = "";
   }
 }

@@ -7,6 +7,8 @@ const publicDir = path.join(rootDir, "public");
 const dataDir = path.join(rootDir, "data");
 const eventsFile = path.join(dataDir, "events.jsonl");
 const configFile = path.join(dataDir, "config.json");
+const whatsappAuthDir = path.join(dataDir, "whatsapp-session");
+const whatsappCacheDir = path.join(rootDir, ".wwebjs_cache");
 
 loadEnvFile(path.join(rootDir, ".env")).then(startServer).catch((error) => {
   console.error("Startup error:", error);
@@ -82,6 +84,10 @@ function startServer() {
 
       if (req.method === "POST" && url.pathname === "/api/whatsapp/start") {
         return handleWhatsAppStart(req, res, url);
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/whatsapp/reset") {
+        return handleWhatsAppReset(req, res, url);
       }
 
       if (req.method === "GET" && url.pathname === "/webhooks/hotmart") {
@@ -484,12 +490,21 @@ async function handleWhatsAppStart(req, res, url) {
     return json(res, 401, { ok: false, error: "Painel nao autorizado" });
   }
 
-  startWhatsAppWebClient();
+  await startWhatsAppWebClient();
   json(res, 202, { ok: true, whatsapp: publicWhatsAppState() });
 }
 
+async function handleWhatsAppReset(req, res, url) {
+  if (!(await isDashboardAuthorized(url))) {
+    return json(res, 401, { ok: false, error: "Painel nao autorizado" });
+  }
+
+  await resetWhatsAppSession();
+  json(res, 200, { ok: true, whatsapp: publicWhatsAppState() });
+}
+
 async function ensureWhatsAppWebClient() {
-  startWhatsAppWebClient();
+  await startWhatsAppWebClient();
   if (whatsappState.status === "error") {
     throw new Error(whatsappState.lastError || "WhatsApp Web nao iniciou.");
   }
@@ -498,7 +513,11 @@ async function ensureWhatsAppWebClient() {
   throw new Error("WhatsApp Web ainda nao esta pronto. Gere o QR Code e conecte o aparelho.");
 }
 
-function startWhatsAppWebClient() {
+async function startWhatsAppWebClient() {
+  if (whatsappState.status === "error" && isRecoverableSessionError(whatsappState.lastError)) {
+    await resetWhatsAppSession();
+  }
+
   if (whatsappState.client || whatsappStartPromise) return whatsappStartPromise;
 
   whatsappState.status = "starting";
@@ -518,11 +537,14 @@ function startWhatsAppWebClient() {
 }
 
 async function initializeWhatsAppWebClient() {
+  await cleanupWhatsAppRuntimeFiles();
+
   const { Client, LocalAuth } = await getWhatsAppWebModule();
   const client = new Client({
     authStrategy: new LocalAuth({
       clientId: "hotmart-whatsapp",
-      dataPath: path.join(dataDir, "whatsapp-session")
+      dataPath: whatsappAuthDir,
+      rmMaxRetries: 10
     }),
     puppeteer: {
       headless: true,
@@ -574,11 +596,69 @@ async function initializeWhatsAppWebClient() {
   });
 
   whatsappState.client = client;
-  client.initialize().catch((error) => {
+  client.initialize().catch(async (error) => {
+    if (isRecoverableSessionError(error)) {
+      await cleanupWhatsAppSessionFiles();
+      setWhatsAppError(new Error(`A sessao local do WhatsApp estava travada e foi limpa. Clique em Iniciar WhatsApp Web novamente. Detalhe: ${error.message || error}`));
+      return;
+    }
+
     setWhatsAppError(error);
   });
 
   return client;
+}
+
+async function resetWhatsAppSession() {
+  clearWhatsAppStartupTimeout();
+  const client = whatsappState.client;
+  whatsappState.client = null;
+  whatsappStartPromise = null;
+
+  if (client) {
+    await client.destroy().catch(() => {});
+  }
+
+  await cleanupWhatsAppSessionFiles();
+
+  whatsappState.status = "stopped";
+  whatsappState.qr = "";
+  whatsappState.qrDataUrl = "";
+  whatsappState.lastError = "";
+  whatsappState.readyAt = "";
+  whatsappState.number = "";
+  whatsappState.startedAt = "";
+}
+
+async function cleanupWhatsAppSessionFiles() {
+  await fs.rm(whatsappAuthDir, { recursive: true, force: true, maxRetries: 10 }).catch(() => {});
+  await fs.rm(whatsappCacheDir, { recursive: true, force: true, maxRetries: 10 }).catch(() => {});
+}
+
+async function cleanupWhatsAppRuntimeFiles() {
+  await fs.mkdir(whatsappAuthDir, { recursive: true }).catch(() => {});
+  await removeMatchingFiles(whatsappAuthDir, new Set([
+    "SingletonLock",
+    "SingletonCookie",
+    "SingletonSocket",
+    "DevToolsActivePort",
+    "lockfile"
+  ]));
+}
+
+async function removeMatchingFiles(dir, names) {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry.name);
+    if (names.has(entry.name)) {
+      await fs.rm(entryPath, { recursive: true, force: true, maxRetries: 5 }).catch(() => {});
+      continue;
+    }
+
+    if (entry.isDirectory()) {
+      await removeMatchingFiles(entryPath, names);
+    }
+  }
 }
 
 function scheduleWhatsAppStartupTimeout() {
@@ -606,6 +686,10 @@ function setWhatsAppError(error) {
 
 function explainWhatsAppError(error) {
   const message = error?.message || String(error || "Erro desconhecido");
+  if (isRecoverableSessionError(message)) {
+    return `A sessao local do WhatsApp esta travada. Clique em Resetar sessao e depois em Iniciar WhatsApp Web. Detalhe: ${message}`;
+  }
+
   const chromiumHints = [
     "Could not find Chrome",
     "Failed to launch",
@@ -622,6 +706,17 @@ function explainWhatsAppError(error) {
   }
 
   return message;
+}
+
+function isRecoverableSessionError(error) {
+  const message = error?.message || String(error || "");
+  return (
+    error?.code === "EEXIST" ||
+    message.includes("EEXIST") ||
+    message.includes("open EEXIST") ||
+    message.includes("already running") ||
+    message.includes("SingletonLock")
+  );
 }
 
 async function getWhatsAppWebModule() {
