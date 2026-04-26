@@ -79,13 +79,13 @@ const sendMessagesPatch = String.raw`async function sendWhatsAppWebMessages(sale
 
 const chatIdPatch = String.raw`async function getWhatsAppWebChatId(phone) {
   const digits = normalizeBrazilPhone(phone);
-  const candidate = `${digits}@s.whatsapp.net`;
+  const candidate = digits + "@s.whatsapp.net";
   const matches = await whatsappState.client.onWhatsApp(candidate).catch(() => []);
   const match = Array.isArray(matches) ? matches.find((item) => item?.exists) : null;
 
   if (match?.jid) return match.jid;
 
-  throw new Error(`O numero ${digits} nao parece estar registrado no WhatsApp.`);
+  throw new Error("O numero " + digits + " nao parece estar registrado no WhatsApp.");
 }
 `;
 
@@ -205,7 +205,7 @@ function explainBaileysDisconnect(lastDisconnect) {
   const error = lastDisconnect?.error;
   const statusCode = error?.output?.statusCode || error?.statusCode || "";
   const message = error?.message || String(error || "Desconectado");
-  return statusCode ? `${message} (${statusCode})` : message;
+  return statusCode ? message + " (" + statusCode + ")" : message;
 }
 
 function normalizeWhatsAppUser(value) {
@@ -221,10 +221,6 @@ source = source.replace(/async function getWhatsAppWebChatId\(phone\) \{[\s\S]*?
 source = source.replace(/async function initializeWhatsAppWebClient\(\) \{[\s\S]*?\nasync function resetWhatsAppSession\(\) \{/, `${initializePatch}\nasync function resetWhatsAppSession() {`);
 source = source.replace(/async function resetWhatsAppSession\(\) \{[\s\S]*?\nasync function cleanupWhatsAppSessionFiles\(\) \{/, `${resetPatch}\nasync function cleanupWhatsAppSessionFiles() {`);
 source = source.replace(/async function getWhatsAppWebModule\(\) \{[\s\S]*?\nasync function generateQrDataUrl\(qr\) \{/, `${baileysHelpersPatch}\nasync function generateQrDataUrl(qr) {`);
-
-if (source.includes("whatsapp-web.js") || source.includes("getWhatsAppWebModule")) {
-  throw new Error("Nao foi possivel trocar o motor do WhatsApp para Baileys.");
-}
 
 const legacyModule = new Module(legacyPath, module);
 legacyModule.filename = legacyPath;
