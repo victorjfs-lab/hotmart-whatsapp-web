@@ -145,9 +145,23 @@ const initializePatch = String.raw`async function initializeWhatsAppWebClient() 
 
     if (update.connection === "close") {
       clearWhatsAppStartupTimeout();
+      whatsappState.client = null;
+      whatsappState.qr = "";
+      whatsappState.qrDataUrl = "";
+
+      if (isBaileysRestartRequired(update.lastDisconnect)) {
+        whatsappState.status = "starting";
+        whatsappState.lastError = "Reiniciando conexao do WhatsApp Web...";
+        setTimeout(() => {
+          if (!whatsappState.client && whatsappState.status === "starting") {
+            startWhatsAppWebClient().catch(setWhatsAppError);
+          }
+        }, 1200);
+        return;
+      }
+
       whatsappState.status = "disconnected";
       whatsappState.lastError = explainBaileysDisconnect(update.lastDisconnect);
-      whatsappState.client = null;
     }
   });
 
@@ -217,9 +231,20 @@ async function getBaileysLogger() {
 
 function explainBaileysDisconnect(lastDisconnect) {
   const error = lastDisconnect?.error;
-  const statusCode = error?.output?.statusCode || error?.statusCode || "";
+  const statusCode = getBaileysDisconnectCode(lastDisconnect);
   const message = error?.message || String(error || "Desconectado");
   return statusCode ? message + " (" + statusCode + ")" : message;
+}
+
+function getBaileysDisconnectCode(lastDisconnect) {
+  const error = lastDisconnect?.error;
+  return Number(error?.output?.statusCode || error?.statusCode || 0);
+}
+
+function isBaileysRestartRequired(lastDisconnect) {
+  const code = getBaileysDisconnectCode(lastDisconnect);
+  const message = String(lastDisconnect?.error?.message || lastDisconnect?.error || "").toLowerCase();
+  return code === 515 || message.includes("restart required");
 }
 
 function normalizeWhatsAppUser(value) {
