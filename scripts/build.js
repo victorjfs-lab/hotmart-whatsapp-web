@@ -14,6 +14,7 @@ async function main() {
   await cp("scripts", "dist/scripts", { recursive: true });
   await cp(".puppeteerrc.cjs", "dist/.puppeteerrc.cjs").catch(() => {});
   await cp("server.js", "dist/server.js");
+  await cp("baileys-server.js", "dist/baileys-server.js");
   await cp("legacy-server.js", "dist/legacy-server.js").catch(() => {});
   await cp("package.json", "dist/package.json");
   await cp("package-lock.json", "dist/package-lock.json").catch(() => {});
