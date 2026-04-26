@@ -10,18 +10,16 @@
     <main class="shell">
       <section class="hero">
         <div>
-          <p class="eyebrow">AutomaÃ§Ã£o de venda</p>
+          <p class="eyebrow">Automacao de venda</p>
           <h1>Hotmart para WhatsApp</h1>
-          <p class="lede">Configure o webhook, conecte seu WhatsApp Web e teste uma venda antes de publicar.</p>
+          <p class="lede">Configure o webhook, conecte o WhatsApp Web e acompanhe os envios de cada comprador.</p>
         </div>
         <div class="status" id="health-status">Verificando...</div>
       </section>
 
       <section class="grid top-grid">
         <article class="panel">
-          <div class="section-title">
-            <h2>Webhook da Hotmart</h2>
-          </div>
+          <h2>Webhook da Hotmart</h2>
           <label>
             URL para colar na Hotmart
             <div class="inline-field">
@@ -29,14 +27,12 @@
               <button id="copy-webhook" type="button">Copiar</button>
             </div>
           </label>
-          <p class="hint">Em produÃ§Ã£o, essa URL precisa ser HTTPS. Localhost serve apenas para teste.</p>
+          <p class="hint">Esta URL pode continuar igual na Hotmart. O token secreto abaixo e opcional.</p>
         </article>
 
         <article class="panel">
-          <h2>Status de configuraÃ§Ã£o</h2>
-          <div class="checks" id="config-checks">
-            <span>Carregando configuraÃ§Ã£o...</span>
-          </div>
+          <h2>Status de configuracao</h2>
+          <div class="checks" id="config-checks">Carregando...</div>
         </article>
       </section>
 
@@ -44,7 +40,7 @@
         <div class="section-title">
           <h2>WhatsApp Web</h2>
           <div class="actions">
-            <button id="reset-whatsapp" type="button" class="secondary">Resetar sessÃ£o</button>
+            <button id="reset-whatsapp" type="button" class="secondary">Resetar sessao</button>
             <button id="start-whatsapp" type="button">Iniciar WhatsApp Web</button>
           </div>
         </div>
@@ -53,22 +49,22 @@
             <strong id="whatsapp-label">Desconectado</strong>
             <span id="whatsapp-detail">Clique em iniciar para gerar o QR Code.</span>
           </div>
-          <img id="whatsapp-qr" alt="QR Code do WhatsApp Web">
+          <img id="whatsapp-qr" alt="QR Code do WhatsApp Web" hidden>
         </div>
       </section>
 
       <section class="panel">
         <div class="section-title">
-          <h2>ConfiguraÃ§Ã£o</h2>
-          <button id="save-config" type="button">Salvar configuraÃ§Ã£o</button>
+          <h2>Configuracao</h2>
+          <button id="save-config" type="button">Salvar configuracao</button>
         </div>
 
         <form id="config-form" class="form-grid">
           <input name="whatsappProvider" type="hidden" value="web">
 
           <label>
-            Token secreto da Hotmart
-            <input name="hotmartWebhookSecret" autocomplete="off" placeholder="Ex.: minha-chave-secreta">
+            Token secreto da Hotmart (opcional)
+            <input name="hotmartWebhookSecret" autocomplete="off" placeholder="Pode deixar em branco">
           </label>
 
           <label>
@@ -77,13 +73,32 @@
           </label>
 
           <label class="wide">
-            Mensagens para enviar, uma por linha
-            <textarea name="whatsappTextMessages" rows="5" placeholder="Oi, {{nome}}! Sua compra de {{produto}} foi confirmada.
-Seu acesso jÃ¡ estÃ¡ liberado. Use o e-mail {{email}} para entrar."></textarea>
+            Sequencia de mensagens
+            <textarea name="whatsappMessageSchedule" rows="7" placeholder="0 | Oi, {{nome}}! Sua compra de {{produto}} foi confirmada.&#10;10m | Seu acesso ja esta liberado no email {{email}}.&#10;1h | Qualquer duvida, responda esta mensagem."></textarea>
+          </label>
+
+          <label class="wide">
+            Mensagens antigas sem atraso
+            <textarea name="whatsappTextMessages" rows="3" placeholder="Opcional. Use apenas se quiser mandar todas na hora."></textarea>
           </label>
         </form>
 
+        <p class="hint">Formato: tempo | mensagem. Exemplos: 0, 30s, 10m, 2h, 1d. Variaveis: {{nome}}, {{produto}}, {{email}}, {{telefone}}, {{transacao}}.</p>
         <div class="notice" id="config-result"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title">
+          <h2>Compradores e envios</h2>
+          <button id="refresh-contacts" type="button" class="secondary">Atualizar</button>
+        </div>
+        <div class="stats-grid">
+          <div class="stat"><strong id="stat-contacts">0</strong><span>Compradores</span></div>
+          <div class="stat"><strong id="stat-sent">0</strong><span>Enviadas</span></div>
+          <div class="stat"><strong id="stat-pending">0</strong><span>Pendentes</span></div>
+          <div class="stat"><strong id="stat-failed">0</strong><span>Falhas</span></div>
+        </div>
+        <div id="contacts" class="contacts-table">Carregando...</div>
       </section>
 
       <section class="panel">
@@ -91,7 +106,7 @@ Seu acesso jÃ¡ estÃ¡ liberado. Use o e-mail {{email}} para entrar."></textar
           <h2>Teste de venda</h2>
           <div class="actions">
             <button id="dry-run" type="button" class="secondary">Validar sem enviar</button>
-            <button id="send-test" type="button">Enviar teste</button>
+            <button id="send-test" type="button">Criar fila de teste</button>
           </div>
         </div>
 
@@ -122,7 +137,7 @@ Seu acesso jÃ¡ estÃ¡ liberado. Use o e-mail {{email}} para entrar."></textar
 
       <section class="panel logs">
         <div class="section-title">
-          <h2>Ãšltimos eventos</h2>
+          <h2>Ultimos eventos</h2>
           <button id="refresh-events" type="button" class="secondary">Atualizar</button>
         </div>
         <div id="events" class="events">Carregando...</div>
