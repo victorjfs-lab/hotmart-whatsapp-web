@@ -241,16 +241,28 @@ async function createWhatsAppClient() {
 
 async function loadBaileys() {
   if (baileysModule) return baileysModule;
-  const imported = await import("@whiskeysockets/baileys");
+  const imported = require("@whiskeysockets/baileys");
   baileysModule = {
-    makeWASocket: imported.default || imported.makeWASocket,
-    useMultiFileAuthState: imported.useMultiFileAuthState,
-    DisconnectReason: imported.DisconnectReason || {}
+    makeWASocket: pickBaileysFunction(imported, "makeWASocket", true),
+    useMultiFileAuthState: pickBaileysFunction(imported, "useMultiFileAuthState", false),
+    DisconnectReason: imported.DisconnectReason || imported.default?.DisconnectReason || {}
   };
-  if (typeof baileysModule.makeWASocket !== "function") {
-    throw new Error("Nao foi possivel carregar o cliente do WhatsApp Web.");
+  if (!baileysModule.makeWASocket || !baileysModule.useMultiFileAuthState) {
+    const keys = Object.keys(imported || {}).slice(0, 12).join(", ");
+    throw new Error(`Nao foi possivel carregar o cliente do WhatsApp Web. Exportacoes: ${keys}`);
   }
   return baileysModule;
+}
+
+function pickBaileysFunction(imported, name, allowDefault) {
+  const candidates = [
+    imported?.[name],
+    imported?.default?.[name],
+    imported?.default?.default?.[name],
+    allowDefault ? imported?.default : null,
+    allowDefault ? imported?.default?.default : null
+  ];
+  return candidates.find((candidate) => typeof candidate === "function") || null;
 }
 
 async function resetWhatsApp() {
