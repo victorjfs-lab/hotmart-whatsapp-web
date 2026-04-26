@@ -21,7 +21,8 @@ const defaultConfig = {
   hotmartWebhookSecret: "",
   hotmartAllowedEvents: "PURCHASE_APPROVED,PURCHASE_COMPLETE,APPROVED,COMPLETE",
   whatsappProvider: "web",
-  whatsappMessageSchedule: "0 | Oi, {{nome}}! Sua compra de {{produto}} foi confirmada.\n10m | Passando para confirmar: seu acesso ja esta liberado no email {{email}}.\n1h | Qualquer duvida, responda esta mensagem que eu te ajudo.",
+  whatsappMessageSchedule:
+    "0 | Oi, {{nome}}! Sua compra de {{produto}} foi confirmada.\n10m | Passando para confirmar: seu acesso ja esta liberado no email {{email}}.\n1h | Qualquer duvida, responda esta mensagem que eu te ajudo.",
   whatsappTextMessages: ""
 };
 
@@ -30,7 +31,8 @@ const whatsappState = {
   qrDataUrl: "",
   lastError: "",
   readyAt: "",
-  number: ""
+  number: "",
+  webVersion: ""
 };
 
 let baileysModule = null;
@@ -76,22 +78,22 @@ app.get("/api/contacts", async (req, res) => {
 });
 
 app.get("/api/whatsapp/status", (req, res) => {
-  res.json({ ok: true, whatsapp: getPublicWhatsAppState() });
+  res.json({ ok: true, whatsapp: publicWhatsAppState() });
 });
 
 app.post("/api/whatsapp/start", async (req, res) => {
   try {
     await startWhatsApp();
-    res.json({ ok: true, whatsapp: getPublicWhatsAppState() });
+    res.json({ ok: true, whatsapp: publicWhatsAppState() });
   } catch (error) {
     setWhatsAppError(error);
-    res.status(500).json({ ok: false, error: friendlyWhatsAppError(error), whatsapp: getPublicWhatsAppState() });
+    res.status(500).json({ ok: false, error: friendlyWhatsAppError(error), whatsapp: publicWhatsAppState() });
   }
 });
 
 app.post("/api/whatsapp/reset", async (req, res) => {
   await resetWhatsApp();
-  res.json({ ok: true, whatsapp: getPublicWhatsAppState() });
+  res.json({ ok: true, whatsapp: publicWhatsAppState() });
 });
 
 app.post("/api/test-sale", async (req, res) => {
@@ -113,9 +115,14 @@ app.post("/api/test-sale", async (req, res) => {
     return res.json({ ok: true, dryRun: true, sale });
   }
 
-  const config = await getConfig();
-  const queued = await queueSaleMessages(sale, config, "TEST_SALE");
-  await recordEvent({ status: queued.duplicate ? "test_sequence_already_queued" : "test_sequence_queued", eventType: "TEST_SALE", sale, queued, receivedAt: new Date().toISOString() });
+  const queued = await queueSaleMessages(sale, await getConfig(), "TEST_SALE");
+  await recordEvent({
+    status: queued.duplicate ? "test_sequence_already_queued" : "test_sequence_queued",
+    eventType: "TEST_SALE",
+    sale,
+    queued,
+    receivedAt: new Date().toISOString()
+  });
   scheduleProcessor(500);
   res.json({ ok: true, sale, messagesQueued: queued.totalMessages, duplicate: queued.duplicate });
 });
@@ -148,7 +155,13 @@ app.post("/webhooks/hotmart", async (req, res) => {
 
   await recordEvent({ status: "queued", eventType, sale, receivedAt: new Date().toISOString(), payload });
   const queued = await queueSaleMessages(sale, config, eventType);
-  await recordEvent({ status: queued.duplicate ? "sequence_already_queued" : "sequence_queued", eventType, sale, queued, receivedAt: new Date().toISOString() });
+  await recordEvent({
+    status: queued.duplicate ? "sequence_already_queued" : "sequence_queued",
+    eventType,
+    sale,
+    queued,
+    receivedAt: new Date().toISOString()
+  });
   scheduleProcessor(500);
   res.json({ ok: true, queued: true, eventType, buyer: sale.buyerName, phone: sale.phone, messagesQueued: queued.totalMessages });
 });
@@ -170,7 +183,7 @@ async function startWhatsApp() {
 
   whatsappState.status = "starting";
   whatsappState.qrDataUrl = "";
-  whatsappState.lastError = "Abrindo sessao do WhatsApp Web...";
+  whatsappState.lastError = "Buscando versao atual do WhatsApp Web...";
 
   startPromise = createWhatsAppClient()
     .catch((error) => {
@@ -187,12 +200,21 @@ async function startWhatsApp() {
 async function createWhatsAppClient() {
   const baileys = await loadBaileys();
   const { state, saveCreds } = await baileys.useMultiFileAuthState(authDir);
+  const version = await getLatestWhatsAppVersion(baileys);
+
+  whatsappState.webVersion = version.join(".");
+  whatsappState.lastError = `Abrindo WhatsApp Web ${whatsappState.webVersion}...`;
 
   whatsappClient = baileys.makeWASocket({
     auth: state,
+    version,
     printQRInTerminal: false,
     logger: pino({ level: "silent" }),
-    browser: ["Hotzapt", "Chrome", "1.0"]
+    browser: getBrowserTuple(baileys),
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    connectTimeoutMs: 60000,
+    keepAliveIntervalMs: 20000
   });
 
   whatsappClient.ev.on("creds.update", saveCreds);
@@ -224,6 +246,12 @@ async function createWhatsAppClient() {
         return;
       }
 
+      if (code === 405) {
+        whatsappState.status = "disconnected";
+        whatsappState.lastError = `WhatsApp recusou a conexao Web ${whatsappState.webVersion}. Clique em Resetar sessao e Iniciar WhatsApp Web de novo.`;
+        return;
+      }
+
       if (code === 515 || String(message).toLowerCase().includes("restart required")) {
         whatsappState.status = "starting";
         whatsappState.lastError = "Reiniciando conexao do WhatsApp Web...";
@@ -244,8 +272,10 @@ async function loadBaileys() {
   const imported = require("@whiskeysockets/baileys");
   baileysModule = {
     makeWASocket: pickBaileysFunction(imported, "makeWASocket", true),
-    useMultiFileAuthState: pickBaileysFunction(imported, "useMultiFileAuthState", false),
-    DisconnectReason: imported.DisconnectReason || imported.default?.DisconnectReason || {}
+    useMultiFileAuthState: pickBaileysFunction(imported, "useMultiFileAuthState"),
+    fetchLatestBaileysVersion: pickBaileysFunction(imported, "fetchLatestBaileysVersion"),
+    DisconnectReason: imported.DisconnectReason || imported.default?.DisconnectReason || {},
+    Browsers: imported.Browsers || imported.default?.Browsers || {}
   };
   if (!baileysModule.makeWASocket || !baileysModule.useMultiFileAuthState) {
     const keys = Object.keys(imported || {}).slice(0, 12).join(", ");
@@ -254,7 +284,7 @@ async function loadBaileys() {
   return baileysModule;
 }
 
-function pickBaileysFunction(imported, name, allowDefault) {
+function pickBaileysFunction(imported, name, allowDefault = false) {
   const candidates = [
     imported?.[name],
     imported?.default?.[name],
@@ -263,6 +293,20 @@ function pickBaileysFunction(imported, name, allowDefault) {
     allowDefault ? imported?.default?.default : null
   ];
   return candidates.find((candidate) => typeof candidate === "function") || null;
+}
+
+async function getLatestWhatsAppVersion(baileys) {
+  if (baileys.fetchLatestBaileysVersion) {
+    const result = await baileys.fetchLatestBaileysVersion().catch(() => null);
+    if (Array.isArray(result?.version)) return result.version;
+  }
+  return [2, 3000, 1015901307];
+}
+
+function getBrowserTuple(baileys) {
+  if (typeof baileys.Browsers?.ubuntu === "function") return baileys.Browsers.ubuntu("Chrome");
+  if (typeof baileys.Browsers?.appropriate === "function") return baileys.Browsers.appropriate("Chrome");
+  return ["Ubuntu", "Chrome", "22.04.4"];
 }
 
 async function resetWhatsApp() {
@@ -280,7 +324,7 @@ async function resetWhatsApp() {
   whatsappState.number = "";
 }
 
-function getPublicWhatsAppState() {
+function publicWhatsAppState() {
   return { ...whatsappState, connected: whatsappState.status === "ready" };
 }
 
@@ -312,9 +356,7 @@ async function queueSaleMessages(sale, config, eventType) {
   const jobs = await readJson(jobsFile, []);
   const saleId = getSaleId(sale);
   const existing = jobs.filter((job) => job.saleId === saleId);
-  if (existing.length) {
-    return { duplicate: true, saleId, totalMessages: existing.length };
-  }
+  if (existing.length) return { duplicate: true, saleId, totalMessages: existing.length };
 
   const now = Date.now();
   const newJobs = messages.map((item, index) => ({
