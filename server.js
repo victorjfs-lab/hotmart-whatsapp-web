@@ -93,8 +93,17 @@ const initializePatch = String.raw`async function initializeWhatsAppWebClient() 
   await cleanupWhatsAppRuntimeFiles();
 
   const baileys = await getBaileysModule();
-  const makeWASocket = baileys.default;
-  const { fetchLatestBaileysVersion, useMultiFileAuthState } = baileys;
+  const makeWASocket = getBaileysExport(baileys, "makeWASocket") || getBaileysExport(baileys, "default");
+  const fetchLatestBaileysVersion = getBaileysExport(baileys, "fetchLatestBaileysVersion");
+  const useMultiFileAuthState = getBaileysExport(baileys, "useMultiFileAuthState");
+
+  if (typeof makeWASocket !== "function") {
+    throw new Error("Motor WhatsApp carregado, mas makeWASocket nao esta disponivel.");
+  }
+  if (typeof useMultiFileAuthState !== "function") {
+    throw new Error("Motor WhatsApp carregado, mas useMultiFileAuthState nao esta disponivel.");
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState(whatsappAuthDir);
   const logger = await getBaileysLogger();
   const versionResult = fetchLatestBaileysVersion
@@ -174,11 +183,16 @@ const baileysHelpersPatch = String.raw`async function getBaileysModule() {
   if (baileysModule) return baileysModule;
 
   baileysModule = await import("@whiskeysockets/baileys");
-  if (!baileysModule.default || !baileysModule.useMultiFileAuthState) {
-    throw new Error("Nao foi possivel carregar o motor WhatsApp Web sem Chrome.");
-  }
-
   return baileysModule;
+}
+
+function getBaileysExport(module, name) {
+  if (!module) return undefined;
+  if (name === "default" && typeof module.default === "function") return module.default;
+  if (typeof module[name] === "function") return module[name];
+  if (typeof module.default?.[name] === "function") return module.default[name];
+  if (name === "makeWASocket" && typeof module.default?.default === "function") return module.default.default;
+  return undefined;
 }
 
 async function getBaileysLogger() {
