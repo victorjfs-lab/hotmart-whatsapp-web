@@ -38,6 +38,11 @@ dryRunButton.addEventListener("click", () => runTestSale(true));
 sendTestButton.addEventListener("click", () => runTestSale(false));
 startWhatsAppButton.addEventListener("click", startWhatsApp);
 resetWhatsAppButton.addEventListener("click", resetWhatsApp);
+contactsContainer.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-retry-sale]");
+  if (!button) return;
+  retryContact(decodeURIComponent(button.dataset.retrySale || ""), button);
+});
 
 checkHealth();
 loadConfig();
@@ -216,26 +221,59 @@ async function loadContacts() {
 function renderStats(stats = {}) {
   statContacts.textContent = stats.contacts || 0;
   statSent.textContent = stats.sent || 0;
-  statPending.textContent = (stats.pending || 0) + (stats.sending || 0);
+  statPending.textContent = (stats.pending || 0) + (stats.sending || 0) + (stats.unconfirmed || 0);
   statFailed.textContent = stats.failed || 0;
 }
 
 function renderContact(contact) {
-  const statusLabel = { concluido: "Concluido", em_andamento: "Em andamento", falhou: "Falhou" }[contact.status] || contact.status;
+  const statusLabel = {
+    concluido: "Concluido",
+    em_andamento: "Em andamento",
+    sem_confirmacao: "Sem confirmacao",
+    falhou: "Falhou"
+  }[contact.status] || contact.status;
   const statusClass = contact.status === "concluido" ? "ok" : contact.status === "falhou" ? "fail" : "warn";
   const details = [contact.phone, contact.buyerEmail].filter(Boolean).join(" - ");
   const sends = `${contact.sentMessages || 0}/${contact.totalMessages || 0}`;
   const next = contact.nextMessageAt ? formatDate(contact.nextMessageAt) : "-";
   const error = contact.lastError ? `<small class="event-error">${escapeHtml(contact.lastError)}</small>` : "";
+  const sentInfo = contact.lastMessageId ? `<small>ID: ${escapeHtml(contact.lastMessageId)}</small>` : "";
+  const retryButton = contact.saleId
+    ? `<button type="button" class="tiny" data-retry-sale="${encodeURIComponent(contact.saleId)}">Reenviar</button>`
+    : "";
   return `
     <div class="contact-row">
       <span><strong>${escapeHtml(contact.buyerName || "Comprador")}</strong><small>${escapeHtml(details)}</small></span>
       <span>${escapeHtml(contact.productName || "-")}</span>
-      <span>${escapeHtml(sends)}</span>
-      <span><mark class="${statusClass}">${escapeHtml(statusLabel)}</mark>${error}</span>
+      <span>${escapeHtml(sends)}${sentInfo}</span>
+      <span><mark class="${statusClass}">${escapeHtml(statusLabel)}</mark>${error}${retryButton}</span>
       <span>${escapeHtml(next)}</span>
     </div>
   `;
+}
+
+async function retryContact(saleId, button) {
+  if (!saleId) return;
+  button.disabled = true;
+  button.textContent = "Recriando...";
+  try {
+    const data = await requestJson("/api/contacts/retry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ saleId })
+    });
+    button.textContent = `${data.queued || 0} na fila`;
+    await loadEvents();
+    await loadContacts();
+  } catch (error) {
+    button.textContent = "Erro";
+    setNotice(testResult, error.message, "error");
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent = "Reenviar";
+    }, 1800);
+  }
 }
 
 async function loadEvents() {
@@ -268,7 +306,14 @@ function renderConfigChecks(config) {
 function renderEvent(event) {
   const sale = event.sale || {};
   const title = [event.status, event.eventType].filter(Boolean).join(" / ");
-  const details = [sale.buyerName, sale.productName, sale.phone, event.sequence ? `msg ${event.sequence}` : "", event.receivedAt ? formatDate(event.receivedAt) : ""].filter(Boolean).join(" - ");
+  const details = [
+    sale.buyerName,
+    sale.productName,
+    sale.phone,
+    event.sequence ? `msg ${event.sequence}` : "",
+    event.messageId ? `id ${event.messageId}` : "",
+    event.receivedAt ? formatDate(event.receivedAt) : ""
+  ].filter(Boolean).join(" - ");
   const error = event.error ? `<span class="event-error">${escapeHtml(event.error)}</span>` : "";
   return `
     <article class="event">

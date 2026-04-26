@@ -40,6 +40,7 @@ let whatsappClient = null;
 let startPromise = null;
 let processorTimer = null;
 let processorRunning = false;
+let pendingAcks = new Map();
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -75,6 +76,29 @@ app.get("/api/events", async (req, res) => {
 app.get("/api/contacts", async (req, res) => {
   const jobs = await readJson(jobsFile, []);
   res.json(buildContactSummary(jobs));
+});
+
+app.post("/api/contacts/retry", async (req, res) => {
+  const body = await ensureBody(req);
+  const jobs = await readJson(jobsFile, []);
+  const source = jobs.find((job) => job.saleId === body.saleId) || jobs.find((job) => job.id === body.jobId);
+  if (!source) {
+    return res.status(404).json({ ok: false, error: "Comprador nao encontrado na fila." });
+  }
+
+  const sale = {
+    buyerName: source.buyerName,
+    buyerEmail: source.buyerEmail,
+    phone: source.phone,
+    productName: source.productName,
+    transaction: `${source.transaction || "retry"}-RETRY-${Date.now()}`,
+    purchaseDate: new Date().toISOString()
+  };
+
+  const queued = await queueSaleMessages(sale, await getConfig(), "MANUAL_RETRY", { force: true });
+  await recordEvent({ status: "manual_retry_queued", eventType: "MANUAL_RETRY", sale, queued, receivedAt: new Date().toISOString() });
+  scheduleProcessor(500);
+  res.json({ ok: true, queued });
 });
 
 app.get("/api/whatsapp/status", (req, res) => {
@@ -218,6 +242,12 @@ async function createWhatsAppClient() {
   });
 
   whatsappClient.ev.on("creds.update", saveCreds);
+  whatsappClient.ev.on("messages.update", (updates) => {
+    for (const update of updates || []) resolveAck(update);
+  });
+  whatsappClient.ev.on("message-receipt.update", (updates) => {
+    for (const update of updates || []) resolveAck(update);
+  });
   whatsappClient.ev.on("connection.update", async (update) => {
     if (update.qr) {
       whatsappState.status = "qr";
@@ -351,10 +381,14 @@ function explainDisconnect(lastDisconnect) {
   return code ? `${message} (${code})` : message;
 }
 
-async function queueSaleMessages(sale, config, eventType) {
+async function ensureBody(req) {
+  return req.body && typeof req.body === "object" ? req.body : {};
+}
+
+async function queueSaleMessages(sale, config, eventType, options = {}) {
   const messages = getScheduledMessages(sale, config);
   const jobs = await readJson(jobsFile, []);
-  const saleId = getSaleId(sale);
+  const saleId = options.force ? `${getSaleId(sale)}|retry-${Date.now()}` : getSaleId(sale);
   const existing = jobs.filter((job) => job.saleId === saleId);
   if (existing.length) return { duplicate: true, saleId, totalMessages: existing.length };
 
@@ -442,11 +476,43 @@ async function processQueue() {
       await writeJson(jobsFile, jobs);
 
       try {
-        await sendWhatsAppMessage(current.phone, current.message);
+        const sent = await sendWhatsAppMessage(current.phone, current.message);
         current.status = "sent";
         current.sentAt = new Date().toISOString();
         current.lastError = "";
-        await recordEvent({ status: "message_sent", eventType: current.eventType, sale: jobToSale(current), sequence: current.sequence, receivedAt: new Date().toISOString() });
+        current.messageId = sent.messageId;
+        current.remoteJid = sent.remoteJid;
+        current.verifiedRecipient = sent.verified;
+        current.ackStatus = sent.ackStatus;
+
+        if (sent.ackConfirmed) {
+          current.status = "sent";
+          await recordEvent({
+            status: "message_sent",
+            eventType: current.eventType,
+            sale: jobToSale(current),
+            sequence: current.sequence,
+            messageId: sent.messageId,
+            remoteJid: sent.remoteJid,
+            ackStatus: sent.ackStatus,
+            verifiedRecipient: sent.verified,
+            receivedAt: new Date().toISOString()
+          });
+        } else {
+          current.status = "unconfirmed";
+          current.lastError = `WhatsApp retornou ID ${sent.messageId || "-"}, mas nao confirmou a saida no socket.`;
+          await recordEvent({
+            status: "message_unconfirmed",
+            eventType: current.eventType,
+            sale: jobToSale(current),
+            sequence: current.sequence,
+            messageId: sent.messageId,
+            remoteJid: sent.remoteJid,
+            verifiedRecipient: sent.verified,
+            error: current.lastError,
+            receivedAt: new Date().toISOString()
+          });
+        }
       } catch (error) {
         current.status = current.attempts >= 3 ? "failed" : "pending";
         current.scheduledAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
@@ -468,12 +534,78 @@ function scheduleProcessor(delayMs) {
 }
 
 async function sendWhatsAppMessage(phone, message) {
-  const jid = `${normalizeBrazilPhone(phone)}@s.whatsapp.net`;
-  await whatsappClient.sendMessage(jid, { text: message });
+  const recipient = await resolveWhatsAppRecipient(phone);
+  const sent = await whatsappClient.sendMessage(recipient.jid, { text: message });
+  const remoteJid = sent?.key?.remoteJid || recipient.jid;
+  const messageId = sent?.key?.id || "";
+  const ack = await waitForMessageAck(messageId, remoteJid, 12000);
+  return {
+    verified: recipient.verified,
+    remoteJid,
+    messageId,
+    ackConfirmed: ack.confirmed,
+    ackStatus: ack.status
+  };
+}
+
+async function resolveWhatsAppRecipient(phone) {
+  const normalized = normalizeBrazilPhone(phone);
+  if (!normalized) throw new Error("Telefone do comprador vazio.");
+
+  const fallbackJid = `${normalized}@s.whatsapp.net`;
+  if (typeof whatsappClient.onWhatsApp !== "function") {
+    return { jid: fallbackJid, verified: false };
+  }
+
+  for (const query of [normalized, fallbackJid]) {
+    const matches = await whatsappClient.onWhatsApp(query).catch(() => []);
+    const match = Array.isArray(matches) ? matches.find((item) => item?.exists) : null;
+    if (match) {
+      return { jid: match.jid || fallbackJid, verified: true };
+    }
+  }
+
+  throw new Error(`Numero ${normalized} nao encontrado no WhatsApp.`);
+}
+
+function waitForMessageAck(messageId, remoteJid, timeoutMs) {
+  if (!messageId) return Promise.resolve({ confirmed: false, status: "sem_id" });
+
+  return new Promise((resolve) => {
+    const keys = [ackKey(messageId, remoteJid), ackKey(messageId, "")];
+    const done = (result) => {
+      clearTimeout(timer);
+      keys.forEach((key) => pendingAcks.delete(key));
+      resolve(result);
+    };
+    const timer = setTimeout(() => done({ confirmed: false, status: "timeout" }), timeoutMs);
+    const entry = { done };
+    keys.forEach((key) => pendingAcks.set(key, entry));
+  });
+}
+
+function ackKey(messageId, remoteJid) {
+  return `${remoteJid || ""}|${messageId || ""}`;
+}
+
+function resolveAck(update) {
+  const messageId = update?.key?.id || update?.messageId || update?.id || "";
+  if (!messageId) return;
+  const remoteJid = update?.key?.remoteJid || update?.remoteJid || "";
+  const status = update?.update?.status || update?.status || update?.receipt?.type || "ack";
+  if (!isConfirmedAckStatus(status)) return;
+  const entry = pendingAcks.get(ackKey(messageId, remoteJid)) || pendingAcks.get(ackKey(messageId, ""));
+  if (entry) entry.done({ confirmed: true, status: String(status || "ack") });
+}
+
+function isConfirmedAckStatus(status) {
+  if (typeof status === "number") return status >= 2;
+  const text = String(status || "").toLowerCase();
+  return ["server", "delivery", "read", "played", "ack", "sent"].some((value) => text.includes(value));
 }
 
 function buildContactSummary(jobs) {
-  const stats = { contacts: 0, totalMessages: jobs.length, pending: 0, sending: 0, sent: 0, failed: 0 };
+  const stats = { contacts: 0, totalMessages: jobs.length, pending: 0, sending: 0, sent: 0, failed: 0, unconfirmed: 0 };
   for (const job of jobs) {
     if (stats[job.status] !== undefined) stats[job.status] += 1;
   }
@@ -492,8 +624,12 @@ function buildContactSummary(jobs) {
         sentMessages: 0,
         pendingMessages: 0,
         failedMessages: 0,
+        unconfirmedMessages: 0,
         nextMessageAt: "",
         lastError: "",
+        lastMessageId: "",
+        lastSentAt: "",
+        remoteJid: "",
         createdAt: job.createdAt
       });
     }
@@ -502,7 +638,11 @@ function buildContactSummary(jobs) {
     if (job.status === "sent") contact.sentMessages += 1;
     if (job.status === "pending" || job.status === "sending") contact.pendingMessages += 1;
     if (job.status === "failed") contact.failedMessages += 1;
+    if (job.status === "unconfirmed") contact.unconfirmedMessages += 1;
     if (job.lastError) contact.lastError = job.lastError;
+    if (job.messageId) contact.lastMessageId = job.messageId;
+    if (job.remoteJid) contact.remoteJid = job.remoteJid;
+    if (job.sentAt) contact.lastSentAt = job.sentAt;
     if ((job.status === "pending" || job.status === "sending") && (!contact.nextMessageAt || Date.parse(job.scheduledAt) < Date.parse(contact.nextMessageAt))) {
       contact.nextMessageAt = job.scheduledAt;
     }
@@ -510,7 +650,13 @@ function buildContactSummary(jobs) {
 
   const contacts = Array.from(grouped.values()).map((contact) => ({
     ...contact,
-    status: contact.sentMessages === contact.totalMessages ? "concluido" : contact.failedMessages && !contact.pendingMessages ? "falhou" : "em_andamento"
+    status: contact.sentMessages === contact.totalMessages
+      ? "concluido"
+      : contact.unconfirmedMessages
+        ? "sem_confirmacao"
+        : contact.failedMessages && !contact.pendingMessages
+          ? "falhou"
+          : "em_andamento"
   })).sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
 
   stats.contacts = contacts.length;

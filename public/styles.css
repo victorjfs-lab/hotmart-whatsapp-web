@@ -228,8 +228,13 @@ button.secondary:hover { background: var(--soft); }
 }
 .contact-head { min-height: 42px; background: var(--soft); color: var(--muted); font-weight: 800; }
 .contact-row strong, .contact-row small { display: block; }
-.contact-row small { margin-top: 4px; color: var(--muted); line-height: 1.35; }
 
+.contact-row .tiny {
+  min-height: 30px;
+  margin-top: 8px;
+  padding: 0 10px;
+  font-size: 12px;
+}
 mark {
   display: inline-block;
   padding: 5px 8px;
