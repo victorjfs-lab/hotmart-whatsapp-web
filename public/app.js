@@ -192,11 +192,24 @@ function renderWhatsAppStatus(whatsapp) {
 
 function detailForStatus(whatsapp) {
   if (whatsapp.status === "ready") {
-    return whatsapp.number ? `Sessao conectada no numero ${whatsapp.number}.` : "Sessao pronta para enviar mensagens.";
+    const numberText = whatsapp.number ? `Sessao conectada no numero ${whatsapp.number}.` : "Sessao pronta para enviar mensagens.";
+    const keepAliveText = whatsapp.lastKeepAliveAt ? ` Keep-alive: ${formatDateTime(whatsapp.lastKeepAliveAt)}.` : "";
+    return `${numberText}${keepAliveText}`;
   }
   if (whatsapp.status === "qr") return "Abra o WhatsApp no celular e leia o QR Code.";
-  if (whatsapp.status === "starting") return "Aguardando o WhatsApp Web gerar o QR Code.";
+  if (whatsapp.status === "starting") {
+    return whatsapp.lastReconnectAt
+      ? `Reconectando automaticamente. Tentativa ${whatsapp.reconnectAttempts || 1}.`
+      : "Aguardando o WhatsApp Web gerar o QR Code.";
+  }
   return "Clique em iniciar para gerar o QR Code.";
+}
+
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("pt-BR");
 }
 
 async function loadContacts() {

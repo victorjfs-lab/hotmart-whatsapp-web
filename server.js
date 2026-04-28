@@ -16,6 +16,10 @@ const configFile = path.join(dataDir, "config.json");
 const eventsFile = path.join(dataDir, "events.json");
 const jobsFile = path.join(dataDir, "message-jobs.json");
 const authDir = path.join(dataDir, "whatsapp-session");
+const whatsappWatchdogIntervalMs = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 60 * 1000);
+const whatsappReconnectBaseMs = Number(process.env.WHATSAPP_RECONNECT_BASE_MS || 5 * 1000);
+const whatsappReconnectMaxMs = Number(process.env.WHATSAPP_RECONNECT_MAX_MS || 5 * 60 * 1000);
+const httpKeepAliveIntervalMs = Number(process.env.HTTP_KEEPALIVE_INTERVAL_MS || 4 * 60 * 1000);
 
 const defaultConfig = {
   hotmartWebhookSecret: "",
@@ -32,7 +36,11 @@ const whatsappState = {
   lastError: "",
   readyAt: "",
   number: "",
-  webVersion: ""
+  webVersion: "",
+  lastKeepAliveAt: "",
+  lastReconnectAt: "",
+  reconnectAttempts: 0,
+  autoStart: false
 };
 
 let baileysModule = null;
@@ -41,6 +49,10 @@ let startPromise = null;
 let processorTimer = null;
 let processorRunning = false;
 let pendingAcks = new Map();
+let whatsappWatchdogTimer = null;
+let whatsappReconnectTimer = null;
+let httpKeepAliveTimer = null;
+let manualWhatsAppStop = false;
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -199,12 +211,20 @@ const host = process.env.HOST || "0.0.0.0";
 app.listen(port, host, () => {
   console.log(`Hotmart WhatsApp app rodando em ${host}:${port}`);
   scheduleProcessor(1500);
+  startWhatsAppWatchdog();
+  startHttpKeepAlive();
+  resumeWhatsAppSession("boot").catch((error) => {
+    console.error("WhatsApp auto-start error:", error);
+  });
 });
 
 async function startWhatsApp() {
   if (whatsappClient && whatsappState.status === "ready") return whatsappClient;
   if (startPromise) return startPromise;
 
+  manualWhatsAppStop = false;
+  clearTimeout(whatsappReconnectTimer);
+  whatsappReconnectTimer = null;
   whatsappState.status = "starting";
   whatsappState.qrDataUrl = "";
   whatsappState.lastError = "Buscando versao atual do WhatsApp Web...";
@@ -222,6 +242,7 @@ async function startWhatsApp() {
 }
 
 async function createWhatsAppClient() {
+  closeWhatsAppSocket();
   const baileys = await loadBaileys();
   const { state, saveCreds } = await baileys.useMultiFileAuthState(authDir);
   const version = await getLatestWhatsAppVersion(baileys);
@@ -261,6 +282,9 @@ async function createWhatsAppClient() {
       whatsappState.lastError = "";
       whatsappState.readyAt = new Date().toISOString();
       whatsappState.number = normalizeWhatsAppUser(whatsappClient.user?.id || "");
+      whatsappState.lastKeepAliveAt = new Date().toISOString();
+      whatsappState.reconnectAttempts = 0;
+      whatsappState.autoStart = true;
       scheduleProcessor(500);
     }
 
@@ -272,25 +296,12 @@ async function createWhatsAppClient() {
 
       if (code === baileys.DisconnectReason?.loggedOut) {
         whatsappState.status = "disconnected";
-        whatsappState.lastError = "Sessao encerrada. Clique em resetar sessao e conecte de novo.";
+        whatsappState.autoStart = false;
+        whatsappState.lastError = "Sessao encerrada pelo WhatsApp. Clique em resetar sessao e conecte de novo.";
         return;
       }
 
-      if (code === 405) {
-        whatsappState.status = "disconnected";
-        whatsappState.lastError = `WhatsApp recusou a conexao Web ${whatsappState.webVersion}. Clique em Resetar sessao e Iniciar WhatsApp Web de novo.`;
-        return;
-      }
-
-      if (code === 515 || String(message).toLowerCase().includes("restart required")) {
-        whatsappState.status = "starting";
-        whatsappState.lastError = "Reiniciando conexao do WhatsApp Web...";
-        setTimeout(() => startWhatsApp().catch(setWhatsAppError), 1500);
-        return;
-      }
-
-      whatsappState.status = "disconnected";
-      whatsappState.lastError = message;
+      scheduleWhatsAppReconnect(`Conexao caiu: ${message || code || "sem detalhe"}`);
     }
   });
 
@@ -340,10 +351,10 @@ function getBrowserTuple(baileys) {
 }
 
 async function resetWhatsApp() {
-  try {
-    if (whatsappClient?.end) whatsappClient.end();
-    if (whatsappClient?.ws?.close) whatsappClient.ws.close();
-  } catch {}
+  manualWhatsAppStop = true;
+  clearTimeout(whatsappReconnectTimer);
+  whatsappReconnectTimer = null;
+  closeWhatsAppSocket();
   whatsappClient = null;
   startPromise = null;
   await fs.rm(authDir, { recursive: true, force: true });
@@ -352,6 +363,10 @@ async function resetWhatsApp() {
   whatsappState.lastError = "Sessao limpa. Clique em iniciar para gerar outro QR Code.";
   whatsappState.readyAt = "";
   whatsappState.number = "";
+  whatsappState.lastKeepAliveAt = "";
+  whatsappState.lastReconnectAt = "";
+  whatsappState.reconnectAttempts = 0;
+  whatsappState.autoStart = false;
 }
 
 function publicWhatsAppState() {
@@ -367,6 +382,96 @@ function setWhatsAppError(error) {
 function friendlyWhatsAppError(error) {
   const message = error?.message || String(error || "Erro desconhecido");
   return `Nao foi possivel iniciar o WhatsApp Web. Detalhe: ${message}`;
+}
+
+function closeWhatsAppSocket() {
+  try {
+    if (whatsappClient?.end) whatsappClient.end();
+    if (whatsappClient?.ws?.close) whatsappClient.ws.close();
+  } catch {}
+}
+
+function startWhatsAppWatchdog() {
+  clearInterval(whatsappWatchdogTimer);
+  whatsappWatchdogTimer = setInterval(() => {
+    runWhatsAppWatchdog().catch((error) => {
+      whatsappState.lastError = `Watchdog do WhatsApp falhou: ${error.message || error}`;
+    });
+  }, whatsappWatchdogIntervalMs);
+}
+
+async function runWhatsAppWatchdog() {
+  if (manualWhatsAppStop || startPromise || whatsappState.status === "qr" || whatsappState.status === "starting") return;
+
+  if (whatsappState.status === "ready" && whatsappClient) {
+    try {
+      await keepWhatsAppOnline();
+    } catch (error) {
+      closeWhatsAppSocket();
+      whatsappClient = null;
+      scheduleWhatsAppReconnect(`Keep-alive falhou: ${error.message || error}`);
+    }
+    return;
+  }
+
+  if (await hasWhatsAppSession()) {
+    scheduleWhatsAppReconnect("Sessao salva detectada, mas WhatsApp nao esta conectado.");
+  }
+}
+
+async function keepWhatsAppOnline() {
+  if (!whatsappClient) return;
+  if (typeof whatsappClient.sendPresenceUpdate === "function") {
+    await whatsappClient.sendPresenceUpdate("available").catch((error) => {
+      throw new Error(`presenca nao enviada: ${error.message || error}`);
+    });
+  }
+  whatsappState.lastKeepAliveAt = new Date().toISOString();
+}
+
+function scheduleWhatsAppReconnect(reason) {
+  if (manualWhatsAppStop || whatsappReconnectTimer || startPromise) return;
+  whatsappState.status = "starting";
+  whatsappState.qrDataUrl = "";
+  whatsappState.reconnectAttempts += 1;
+  whatsappState.lastReconnectAt = new Date().toISOString();
+  whatsappState.autoStart = true;
+
+  const delayMs = Math.min(
+    whatsappReconnectBaseMs * Math.max(1, whatsappState.reconnectAttempts),
+    whatsappReconnectMaxMs
+  );
+  whatsappState.lastError = `${reason} Tentando reconectar em ${Math.round(delayMs / 1000)}s.`;
+
+  whatsappReconnectTimer = setTimeout(() => {
+    whatsappReconnectTimer = null;
+    startWhatsApp().catch((error) => {
+      setWhatsAppError(error);
+      scheduleWhatsAppReconnect(error.message || String(error));
+    });
+  }, delayMs);
+}
+
+async function resumeWhatsAppSession(reason) {
+  if (!(await hasWhatsAppSession())) return;
+  whatsappState.autoStart = true;
+  scheduleWhatsAppReconnect(reason === "boot" ? "Servidor reiniciou e encontrou uma sessao salva." : reason);
+}
+
+async function hasWhatsAppSession() {
+  try {
+    const entries = await fs.readdir(authDir);
+    return entries.includes("creds.json") || entries.some((entry) => entry.endsWith(".json"));
+  } catch {
+    return false;
+  }
+}
+
+function startHttpKeepAlive() {
+  clearInterval(httpKeepAliveTimer);
+  httpKeepAliveTimer = setInterval(() => {
+    fetch(`http://127.0.0.1:${port}/health`).catch(() => {});
+  }, httpKeepAliveIntervalMs);
 }
 
 function getDisconnectCode(lastDisconnect) {
