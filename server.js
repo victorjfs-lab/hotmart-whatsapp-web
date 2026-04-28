@@ -1,3 +1,4 @@
+const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const nodeCrypto = require("node:crypto");
@@ -16,10 +17,14 @@ const configFile = path.join(dataDir, "config.json");
 const eventsFile = path.join(dataDir, "events.json");
 const jobsFile = path.join(dataDir, "message-jobs.json");
 const authDir = path.join(dataDir, "whatsapp-session");
+const whatsappLockFile = path.join(dataDir, "whatsapp-session.lock");
 const whatsappWatchdogIntervalMs = Number(process.env.WHATSAPP_WATCHDOG_INTERVAL_MS || 60 * 1000);
 const whatsappReconnectBaseMs = Number(process.env.WHATSAPP_RECONNECT_BASE_MS || 5 * 1000);
 const whatsappReconnectMaxMs = Number(process.env.WHATSAPP_RECONNECT_MAX_MS || 5 * 60 * 1000);
 const httpKeepAliveIntervalMs = Number(process.env.HTTP_KEEPALIVE_INTERVAL_MS || 4 * 60 * 1000);
+const whatsappLockHeartbeatMs = Number(process.env.WHATSAPP_LOCK_HEARTBEAT_MS || 15 * 1000);
+const whatsappLockMaxAgeMs = Number(process.env.WHATSAPP_LOCK_MAX_AGE_MS || 2 * 60 * 1000);
+const whatsappInstanceId = `${process.pid}-${Date.now()}`;
 
 const defaultConfig = {
   hotmartWebhookSecret: "",
@@ -52,19 +57,30 @@ let pendingAcks = new Map();
 let whatsappWatchdogTimer = null;
 let whatsappReconnectTimer = null;
 let httpKeepAliveTimer = null;
+let whatsappLockHeartbeatTimer = null;
+let whatsappLockOwned = false;
 let manualWhatsAppStop = false;
+
+process.once("exit", releaseWhatsAppInstanceLockSync);
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    releaseWhatsAppInstanceLockSync();
+    process.exit(0);
+  });
+}
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
+
+app.get("/grupo", (req, res) => {
+  res.redirect(302, "https://chat.whatsapp.com/L2CM4XvJgj15g18vs33Tl9");
+});
+
 app.use(express.static(publicDir));
 
 app.get("/health", (req, res) => {
   res.json({ ok: true, service: "hotmart-whatsapp-web" });
-});
-
-app.get("/grupo", (req, res) => {
-  res.redirect(302, "https://chat.whatsapp.com/L2CM4XvJgj15g18vs33Tl9");
 });
 
 app.get("/api/config", async (req, res) => {
@@ -227,6 +243,7 @@ async function startWhatsApp() {
   if (startPromise) return startPromise;
 
   manualWhatsAppStop = false;
+  await ensureWhatsAppInstanceLock();
   clearTimeout(whatsappReconnectTimer);
   whatsappReconnectTimer = null;
   whatsappState.status = "starting";
@@ -302,6 +319,17 @@ async function createWhatsAppClient() {
         whatsappState.status = "disconnected";
         whatsappState.autoStart = false;
         whatsappState.lastError = "Sessao encerrada pelo WhatsApp. Clique em resetar sessao e conecte de novo.";
+        await releaseWhatsAppInstanceLock();
+        return;
+      }
+
+      if (isConflictDisconnect(code, message)) {
+        manualWhatsAppStop = true;
+        clearTimeout(whatsappReconnectTimer);
+        whatsappReconnectTimer = null;
+        whatsappState.status = "disconnected";
+        whatsappState.autoStart = false;
+        whatsappState.lastError = "Conflito de sessao detectado. Feche outros WhatsApp Web ligados nesse numero e clique em Iniciar WhatsApp Web novamente.";
         return;
       }
 
@@ -371,6 +399,7 @@ async function resetWhatsApp() {
   whatsappState.lastReconnectAt = "";
   whatsappState.reconnectAttempts = 0;
   whatsappState.autoStart = false;
+  await releaseWhatsAppInstanceLock();
 }
 
 function publicWhatsAppState() {
@@ -393,6 +422,101 @@ function closeWhatsAppSocket() {
     if (whatsappClient?.end) whatsappClient.end();
     if (whatsappClient?.ws?.close) whatsappClient.ws.close();
   } catch {}
+}
+
+async function ensureWhatsAppInstanceLock() {
+  if (whatsappLockOwned) {
+    await touchWhatsAppInstanceLock();
+    return;
+  }
+
+  await fs.mkdir(dataDir, { recursive: true });
+
+  try {
+    const handle = await fs.open(whatsappLockFile, "wx");
+    await handle.writeFile(JSON.stringify(createWhatsAppLock(), null, 2), "utf8");
+    await handle.close();
+    whatsappLockOwned = true;
+    startWhatsAppLockHeartbeat();
+    return;
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+  }
+
+  const current = await readJson(whatsappLockFile, null);
+  if (!current || isWhatsAppLockStale(current)) {
+    await fs.rm(whatsappLockFile, { force: true });
+    return ensureWhatsAppInstanceLock();
+  }
+
+  throw new Error("Outra instancia do servidor ja esta mantendo o WhatsApp Web ativo. Aguarde alguns segundos ou reinicie pelo painel.");
+}
+
+function createWhatsAppLock() {
+  const now = new Date().toISOString();
+  return {
+    instanceId: whatsappInstanceId,
+    pid: process.pid,
+    startedAt: now,
+    updatedAt: now
+  };
+}
+
+function isWhatsAppLockStale(lock) {
+  const updatedAt = Date.parse(lock?.updatedAt || lock?.startedAt || "");
+  return !updatedAt || Date.now() - updatedAt > whatsappLockMaxAgeMs;
+}
+
+function startWhatsAppLockHeartbeat() {
+  clearInterval(whatsappLockHeartbeatTimer);
+  whatsappLockHeartbeatTimer = setInterval(() => {
+    touchWhatsAppInstanceLock().catch(() => {});
+  }, whatsappLockHeartbeatMs);
+}
+
+async function touchWhatsAppInstanceLock() {
+  if (!whatsappLockOwned) return;
+  const current = await readJson(whatsappLockFile, null);
+  if (current?.instanceId && current.instanceId !== whatsappInstanceId) {
+    whatsappLockOwned = false;
+    clearInterval(whatsappLockHeartbeatTimer);
+    whatsappLockHeartbeatTimer = null;
+    return;
+  }
+  await writeJson(whatsappLockFile, {
+    ...(current || createWhatsAppLock()),
+    instanceId: whatsappInstanceId,
+    pid: process.pid,
+    updatedAt: new Date().toISOString()
+  });
+}
+
+async function releaseWhatsAppInstanceLock() {
+  if (!whatsappLockOwned) return;
+  whatsappLockOwned = false;
+  clearInterval(whatsappLockHeartbeatTimer);
+  whatsappLockHeartbeatTimer = null;
+  const current = await readJson(whatsappLockFile, null);
+  if (!current?.instanceId || current.instanceId === whatsappInstanceId) {
+    await fs.rm(whatsappLockFile, { force: true });
+  }
+}
+
+function releaseWhatsAppInstanceLockSync() {
+  if (!whatsappLockOwned) return;
+  whatsappLockOwned = false;
+  clearInterval(whatsappLockHeartbeatTimer);
+  whatsappLockHeartbeatTimer = null;
+  try {
+    const current = JSON.parse(fsSync.readFileSync(whatsappLockFile, "utf8"));
+    if (!current?.instanceId || current.instanceId === whatsappInstanceId) {
+      fsSync.rmSync(whatsappLockFile, { force: true });
+    }
+  } catch {}
+}
+
+function isConflictDisconnect(code, message) {
+  return code === 440 || /conflict/i.test(message || "");
 }
 
 function startWhatsAppWatchdog() {
