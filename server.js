@@ -63,6 +63,10 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, service: "hotmart-whatsapp-web" });
 });
 
+app.get("/grupo", (req, res) => {
+  res.redirect(302, "https://chat.whatsapp.com/L2CM4XvJgj15g18vs33Tl9");
+});
+
 app.get("/api/config", async (req, res) => {
   res.json({ ok: true, config: await getConfig() });
 });
