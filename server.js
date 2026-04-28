@@ -73,10 +73,6 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-app.get("/grupo", (req, res) => {
-  res.redirect(302, "https://chat.whatsapp.com/L2CM4XvJgj15g18vs33Tl9");
-});
-
 app.use(express.static(publicDir));
 
 app.get("/health", (req, res) => {
