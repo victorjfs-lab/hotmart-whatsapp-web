@@ -326,6 +326,7 @@ async function createWhatsAppClient() {
         whatsappState.status = "disconnected";
         whatsappState.autoStart = false;
         whatsappState.lastError = "Conflito de sessao detectado. Feche outros WhatsApp Web ligados nesse numero e clique em Iniciar WhatsApp Web novamente.";
+        await forceReleaseWhatsAppInstanceLock();
         return;
       }
 
@@ -395,7 +396,7 @@ async function resetWhatsApp() {
   whatsappState.lastReconnectAt = "";
   whatsappState.reconnectAttempts = 0;
   whatsappState.autoStart = false;
-  await releaseWhatsAppInstanceLock();
+  await forceReleaseWhatsAppInstanceLock();
 }
 
 function publicWhatsAppState() {
@@ -496,6 +497,13 @@ async function releaseWhatsAppInstanceLock() {
   if (!current?.instanceId || current.instanceId === whatsappInstanceId) {
     await fs.rm(whatsappLockFile, { force: true });
   }
+}
+
+async function forceReleaseWhatsAppInstanceLock() {
+  whatsappLockOwned = false;
+  clearInterval(whatsappLockHeartbeatTimer);
+  whatsappLockHeartbeatTimer = null;
+  await fs.rm(whatsappLockFile, { force: true });
 }
 
 function releaseWhatsAppInstanceLockSync() {
